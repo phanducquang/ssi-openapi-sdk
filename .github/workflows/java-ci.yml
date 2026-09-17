@@ -26,4 +26,4 @@ jobs:
           gradle-version: '8.14.3'
 
       - name: Run tests
-        run: gradle test
+        run: gradle test --stacktrace --info --no-daemon
