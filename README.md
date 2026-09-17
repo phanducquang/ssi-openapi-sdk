@@ -11,9 +11,14 @@ The SDK owns the access-token lifecycle. Application code supplies SSI credentia
 - Normal OTP and Smart OTP request + automatic polling (`202` / code `401114`).
 - Refresh-token reuse when access token expires.
 - Authenticated WebSocket to `wss://stream.ssi.com.vn/ws/v3`.
-- Trade, quote, foreign room, market status, put-through, odd lot, OHLCV subscriptions.
-- Heartbeat ping and typed callbacks.
-- Raw JSON callback for acknowledgement/unmapped messages.
+- Trade, quote, foreign room, market status, put-through, odd lot and OHLCV subscriptions.
+- Subscription registry + automatic replay after reconnect.
+- Automatic reconnect with exponential backoff.
+- Reconnect never starts a new OTP flow automatically. If neither the access token nor refresh token can be used, state becomes `AUTH_REQUIRED`.
+- Manual disconnect never triggers reconnect.
+- Connection lifecycle callbacks and connection diagnostics.
+- Heartbeat survives transient disconnects and resumes after reconnect.
+- Typed market-data callbacks plus raw JSON callback.
 
 ## Configuration
 
@@ -23,10 +28,13 @@ SsiConfig config = SsiConfig.builder()
         .apiKey(System.getenv("SSI_API_KEY"))
         .apiSecret(System.getenv("SSI_API_SECRET"))
         .privateKey(System.getenv("SSI_PRIVATE_KEY"))
+        .autoReconnect(true)
         .build();
 
 SsiClient client = SsiClient.create(config);
 ```
+
+`autoReconnect` defaults to `true`. Reconnect uses `maxRetries` and `retryDelay` with exponential backoff.
 
 Do not commit credentials, OTPs, refresh tokens or access tokens.
 
@@ -53,10 +61,7 @@ try (SsiClient client = SsiClient.create(config)) {
 ```java
 try (SsiClient client = SsiClient.create(config)) {
     client.streaming().onTrade(System.out::println);
-
-    // requestOtp -> transactionId -> poll auth/token until approved -> WebSocket
     client.streaming().connectWithSmartOtpApproval();
-
     client.streaming().subscribeSymbol("VNM", "SSI");
     client.streaming().awaitClose();
 }
@@ -64,15 +69,33 @@ try (SsiClient client = SsiClient.create(config)) {
 
 The user still approves the push notification on the SSI device. Polling is configurable with `smartOtpPollInterval(...)` and `smartOtpPollMaxRetries(...)`.
 
-If the application already has a Smart OTP `transactionId`, call `connectWithSmartOtp(transactionId)`. The application still never passes an access token.
+## Reconnect and subscription replay
 
-## Credential-only auth
+Every successful subscribe is stored in the SDK's in-memory subscription registry. Unexpected disconnects reuse a valid access token, refresh an expired token when possible, reconnect with exponential backoff, then replay active subscriptions. Calling `disconnect()` is intentional and never triggers reconnect.
 
-For SSI scopes/accounts that allow API key + secret without OTP:
+The reconnect path intentionally does **not** request a new OTP or Smart OTP. If neither access token nor refresh token can be used, the state becomes `AUTH_REQUIRED` and application interaction is required.
+
+## Connection observability
 
 ```java
-client.streaming().connect();
+client.streaming()
+        .onConnected(() -> System.out.println("SSI stream connected"))
+        .onDisconnected(event -> System.out.println("SSI stream disconnected: " + event))
+        .onReconnecting(event -> System.out.printf("Reconnect %d/%d after %s%n", event.attempt(), event.maxAttempts(), event.delay()))
+        .onAuthenticationRequired(error -> System.out.println("SSI authentication required: " + error.getMessage()))
+        .onConnectionError(Throwable::printStackTrace);
 ```
+
+Runtime diagnostics:
+
+```java
+client.streaming().connectionState();
+client.streaming().isConnected();
+client.streaming().activeSubscriptions();
+client.streaming().lastMessageAt();
+```
+
+Possible states: `DISCONNECTED`, `CONNECTING`, `CONNECTED`, `RECONNECTING`, `AUTH_REQUIRED`, `FAILED`.
 
 ## OHLCV
 
@@ -83,23 +106,43 @@ client.streaming().subscribeOhlcv(Timeframe.MINUTE_1, "VNM", "FPT");
 
 Intervals mirror the Python SDK: `1m`, `3m`, `5m`, `15m`, `1h`, `1d`, `1w`, `1M`.
 
+## Heartbeat
+
+```java
+client.streaming().startHeartbeat(Duration.ofSeconds(30));
+```
+
+Heartbeat sends only while the socket is connected. A transient disconnect does not destroy the scheduler, so heartbeat resumes after a successful reconnect.
+
 ## Architecture
 
 ```text
 SsiClient
   |-- TokenManager
-  |     |-- requestOtp
-  |     |-- authenticate / Smart OTP polling
-  |     `-- refresh
+  |     |-- requestOtp / authenticate / Smart OTP polling
+  |     |-- refresh
+  |     `-- reconnect-safe token resolution
   `-- StreamingService
-        |-- SsiWebSocketClient
-        `-- StreamingMessageDispatcher
+        |-- subscription registry
+        |-- reconnect orchestration
+        |-- lifecycle/observability
+        |-- StreamingMessageDispatcher
+        `-- WebSocketTransport
+              `-- SsiWebSocketClient (JDK WebSocket)
 ```
+
+Transport owns the WebSocket connection. `StreamingService` owns reconnect orchestration because it has access to both token lifecycle and active subscriptions.
+
+## Current validation status
+
+Unit tests cover Smart OTP polling, refresh-token reuse, reconnect without implicit OTP, unexpected disconnect -> reconnect -> subscription replay, manual disconnect -> no reconnect, subscribe/unsubscribe registry behavior, request serialization and typed trade/quote dispatch.
+
+Live SSI authentication and WebSocket integration still requires real SSI credentials and OTP/Smart OTP approval and is not performed by automated tests.
 
 ## Next milestones
 
-1. Automatic WebSocket reconnect + subscription replay.
-2. Trading-channel stream: order status, portfolio, FCO events.
+1. Live integration validation against SSI with real credentials.
+2. TRADING-channel stream: order status, portfolio and FCO events.
 3. Market Data REST APIs.
 4. Account/portfolio/trading/FCO REST APIs.
 5. Publishing/release automation.
