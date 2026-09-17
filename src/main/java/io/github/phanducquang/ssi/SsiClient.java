@@ -21,7 +21,7 @@ public final class SsiClient implements AutoCloseable {
         this.restClient = new RestClient(config, objectMapper);
         this.tokenManager = new TokenManager(restClient, config, objectMapper);
         SsiWebSocketClient webSocketClient = new SsiWebSocketClient(config, objectMapper);
-        this.streamingService = new StreamingService(tokenManager, webSocketClient, new StreamingMessageDispatcher(objectMapper));
+        this.streamingService = new StreamingService(tokenManager, webSocketClient, new StreamingMessageDispatcher(objectMapper), config);
     }
 
     public static SsiClient create(SsiConfig config) { return new SsiClient(config); }

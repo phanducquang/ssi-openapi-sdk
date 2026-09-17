@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
-public final class SsiWebSocketClient implements AutoCloseable {
+public final class SsiWebSocketClient implements WebSocketTransport {
     private static final Logger log = LoggerFactory.getLogger(SsiWebSocketClient.class);
     private final SsiConfig config;
     private final ObjectMapper objectMapper;
@@ -31,6 +31,7 @@ public final class SsiWebSocketClient implements AutoCloseable {
     private volatile WebSocket webSocket;
     private volatile ConnectionState state = ConnectionState.DISCONNECTED;
     private volatile Consumer<String> messageHandler = ignored -> {};
+    private volatile WebSocketLifecycleListener lifecycleListener = new WebSocketLifecycleListener() {};
     private volatile CountDownLatch closeLatch = new CountDownLatch(0);
 
     public SsiWebSocketClient(SsiConfig config, ObjectMapper objectMapper) {
@@ -39,22 +40,16 @@ public final class SsiWebSocketClient implements AutoCloseable {
         this.httpClient = HttpClient.newBuilder().connectTimeout(config.timeout()).build();
     }
 
+    @Override
     public synchronized void connect(String accessToken) {
         if (state == ConnectionState.CONNECTED) return;
         if (accessToken == null || accessToken.isBlank()) throw new AuthenticationException("A valid SSI access token is required before WebSocket connect");
-
         RuntimeException lastFailure = null;
         for (int attempt = 0; attempt < config.maxRetries(); attempt++) {
             state = ConnectionState.CONNECTING;
             closeLatch = new CountDownLatch(1);
             try {
-                this.webSocket = httpClient.newWebSocketBuilder()
-                        .connectTimeout(config.timeout())
-                        .header("Content-Type", "application/json")
-                        .header("Accept", "application/json")
-                        .header("Authorization", "Bearer " + accessToken)
-                        .buildAsync(config.streamingUrl(), new Listener())
-                        .join();
+                this.webSocket = httpClient.newWebSocketBuilder().connectTimeout(config.timeout()).header("Content-Type", "application/json").header("Accept", "application/json").header("Authorization", "Bearer " + accessToken).buildAsync(config.streamingUrl(), new Listener()).join();
                 state = ConnectionState.CONNECTED;
                 log.info("Connected to SSI WebSocket {}", config.streamingUrl());
                 return;
@@ -68,8 +63,10 @@ public final class SsiWebSocketClient implements AutoCloseable {
         throw lastFailure == null ? new WebSocketException("Failed to connect to SSI WebSocket") : lastFailure;
     }
 
-    public void onMessage(Consumer<String> handler) { this.messageHandler = Objects.requireNonNull(handler); }
+    @Override public void onMessage(Consumer<String> handler) { this.messageHandler = Objects.requireNonNull(handler); }
+    @Override public void onLifecycle(WebSocketLifecycleListener listener) { this.lifecycleListener = Objects.requireNonNull(listener); }
 
+    @Override
     public void send(Object payload) {
         WebSocket socket = webSocket;
         if (socket == null || state != ConnectionState.CONNECTED) throw new WebSocketException("SSI WebSocket is not connected");
@@ -78,6 +75,7 @@ public final class SsiWebSocketClient implements AutoCloseable {
         catch (CompletionException e) { throw new WebSocketException("Failed to send SSI WebSocket request", e.getCause() == null ? e : e.getCause()); }
     }
 
+    @Override
     public synchronized void disconnect() {
         WebSocket socket = webSocket;
         webSocket = null;
@@ -89,18 +87,20 @@ public final class SsiWebSocketClient implements AutoCloseable {
         closeLatch.countDown();
     }
 
+    @Override
     public void awaitClose() {
         try { closeLatch.await(); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new WebSocketException("Interrupted while waiting for SSI WebSocket to close", e); }
     }
 
+    @Override
     public boolean awaitClose(Duration timeout) {
         try { return closeLatch.await(timeout.toMillis(), TimeUnit.MILLISECONDS); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new WebSocketException("Interrupted while waiting for SSI WebSocket to close", e); }
     }
 
-    public boolean isConnected() { return state == ConnectionState.CONNECTED && webSocket != null; }
-    public ConnectionState state() { return state; }
+    @Override public boolean isConnected() { return state == ConnectionState.CONNECTED && webSocket != null; }
+    @Override public ConnectionState state() { return state; }
     @Override public void close() { disconnect(); }
 
     private RuntimeException mapConnectFailure(Throwable cause) {
@@ -126,7 +126,11 @@ public final class SsiWebSocketClient implements AutoCloseable {
 
     private final class Listener implements WebSocket.Listener {
         private final StringBuilder textBuffer = new StringBuilder();
-        @Override public void onOpen(WebSocket webSocket) { state = ConnectionState.CONNECTED; webSocket.request(1); }
+        @Override public void onOpen(WebSocket webSocket) {
+            state = ConnectionState.CONNECTED;
+            try { lifecycleListener.onConnected(); } catch (RuntimeException e) { log.error("SSI WebSocket connected callback failed", e); }
+            webSocket.request(1);
+        }
         @Override public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
             synchronized (textBuffer) {
                 textBuffer.append(data);
@@ -145,6 +149,7 @@ public final class SsiWebSocketClient implements AutoCloseable {
             SsiWebSocketClient.this.webSocket = null;
             closeLatch.countDown();
             log.info("SSI WebSocket closed. code={}, reason={}", statusCode, reason);
+            try { lifecycleListener.onDisconnected(statusCode, reason); } catch (RuntimeException e) { log.error("SSI WebSocket disconnected callback failed", e); }
             return CompletableFuture.completedFuture(null);
         }
         @Override public void onError(WebSocket webSocket, Throwable error) {
@@ -152,6 +157,7 @@ public final class SsiWebSocketClient implements AutoCloseable {
             SsiWebSocketClient.this.webSocket = null;
             closeLatch.countDown();
             log.error("SSI WebSocket error", error);
+            try { lifecycleListener.onError(error); } catch (RuntimeException e) { log.error("SSI WebSocket error callback failed", e); }
         }
     }
 }

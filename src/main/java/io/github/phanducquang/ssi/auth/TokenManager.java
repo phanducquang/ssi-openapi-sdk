@@ -79,7 +79,8 @@ public final class TokenManager {
 
     public synchronized Token refresh() {
         Token current = token;
-        if (current == null || !current.hasRefreshToken()) throw new AuthenticationException("No refresh token available; authenticate first");
+        long now = Instant.now().getEpochSecond();
+        if (current == null || !current.hasValidRefreshToken(now)) throw new AuthenticationException("No valid refresh token available; authenticate again");
         RestClient.ApiResponse response = restClient.post(REFRESH_TOKEN_PATH, new RefreshTokenRequest(current.refreshToken()));
         Token refreshed = parseToken(response.body(), "refreshing token");
         setToken(refreshed);
@@ -88,29 +89,49 @@ public final class TokenManager {
 
     public String ensureAuthenticated() {
         if (hasValidToken()) return token.accessToken();
-        if (token != null && token.hasRefreshToken()) return refresh().accessToken();
+        if (hasValidRefreshToken()) return refresh().accessToken();
         return authenticate().accessToken();
     }
+
     public String ensureAuthenticatedWithOtp(String otp) {
         if (hasValidToken()) return token.accessToken();
-        if (token != null && token.hasRefreshToken()) return refresh().accessToken();
+        if (hasValidRefreshToken()) return refresh().accessToken();
         return authenticateWithOtp(otp).accessToken();
     }
+
     public String ensureAuthenticatedWithSmartOtp(String transactionId) {
         if (hasValidToken()) return token.accessToken();
-        if (token != null && token.hasRefreshToken()) return refresh().accessToken();
+        if (hasValidRefreshToken()) return refresh().accessToken();
         return authenticateSmartOtp(transactionId).accessToken();
     }
+
     public String ensureAuthenticatedWithSmartOtpApproval() {
         if (hasValidToken()) return token.accessToken();
-        if (token != null && token.hasRefreshToken()) return refresh().accessToken();
+        if (hasValidRefreshToken()) return refresh().accessToken();
         return requestAndAuthenticateSmartOtp().accessToken();
     }
 
+    public String ensureAuthenticatedForReconnect() {
+        if (hasValidToken()) return token.accessToken();
+        if (hasValidRefreshToken()) return refresh().accessToken();
+        throw new AuthenticationException("SSI authentication is required before reconnect; no valid access or refresh token is available");
+    }
+
+    public String refreshForReconnect() {
+        if (!hasValidRefreshToken()) throw new AuthenticationException("SSI authentication is required before reconnect; no valid refresh token is available");
+        return refresh().accessToken();
+    }
+
     public Token token() { return token; }
+
     public boolean hasValidToken() {
         Token current = token;
         return current != null && current.accessToken() != null && !current.accessToken().isBlank() && !current.isExpired(Instant.now().getEpochSecond());
+    }
+
+    public boolean hasValidRefreshToken() {
+        Token current = token;
+        return current != null && current.hasValidRefreshToken(Instant.now().getEpochSecond());
     }
 
     private Token authenticateInternal(TokenRequest request) {

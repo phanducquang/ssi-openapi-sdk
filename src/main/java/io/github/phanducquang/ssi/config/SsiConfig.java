@@ -19,6 +19,7 @@ public final class SsiConfig {
     private final Duration retryDelay;
     private final Duration smartOtpPollInterval;
     private final int smartOtpPollMaxRetries;
+    private final boolean autoReconnect;
 
     private SsiConfig(Builder builder) {
         this.clientId = builder.clientId;
@@ -32,6 +33,7 @@ public final class SsiConfig {
         this.retryDelay = builder.retryDelay;
         this.smartOtpPollInterval = builder.smartOtpPollInterval;
         this.smartOtpPollMaxRetries = builder.smartOtpPollMaxRetries;
+        this.autoReconnect = builder.autoReconnect;
     }
 
     public static Builder builder() { return new Builder(); }
@@ -46,6 +48,7 @@ public final class SsiConfig {
     public Duration retryDelay() { return retryDelay; }
     public Duration smartOtpPollInterval() { return smartOtpPollInterval; }
     public int smartOtpPollMaxRetries() { return smartOtpPollMaxRetries; }
+    public boolean autoReconnect() { return autoReconnect; }
 
     public void validateCredentials() {
         if (apiKey == null || apiKey.isBlank() || apiSecret == null || apiSecret.isBlank()) {
@@ -65,6 +68,7 @@ public final class SsiConfig {
         private Duration retryDelay = Duration.ofSeconds(2);
         private Duration smartOtpPollInterval = Duration.ofSeconds(5);
         private int smartOtpPollMaxRetries = 5;
+        private boolean autoReconnect = true;
 
         public Builder clientId(String clientId) { this.clientId = Objects.requireNonNullElse(clientId, ""); return this; }
         public Builder apiKey(String apiKey) { this.apiKey = Objects.requireNonNullElse(apiKey, ""); return this; }
@@ -79,6 +83,7 @@ public final class SsiConfig {
         public Builder retryDelay(Duration retryDelay) { this.retryDelay = requireNonNegative(retryDelay, "retryDelay"); return this; }
         public Builder smartOtpPollInterval(Duration interval) { this.smartOtpPollInterval = requirePositive(interval, "smartOtpPollInterval"); return this; }
         public Builder smartOtpPollMaxRetries(int retries) { if (retries < 1) throw new IllegalArgumentException("smartOtpPollMaxRetries must be >= 1"); this.smartOtpPollMaxRetries = retries; return this; }
+        public Builder autoReconnect(boolean autoReconnect) { this.autoReconnect = autoReconnect; return this; }
         public SsiConfig build() { return new SsiConfig(this); }
 
         private static Duration requirePositive(Duration value, String name) { Objects.requireNonNull(value, name); if (value.isZero() || value.isNegative()) throw new IllegalArgumentException(name + " must be > 0"); return value; }
