@@ -136,7 +136,17 @@ public final class TokenManager {
 
     private Token authenticateInternal(TokenRequest request) {
         validateCredentials();
-        RestClient.ApiResponse response = restClient.post(ACCESS_TOKEN_PATH, request);
+        RestClient.ApiResponse response;
+        try {
+            response = restClient.post(ACCESS_TOKEN_PATH, request);
+        } catch (AuthenticationException authenticationFailure) {
+            if (isSmartOtpPending(authenticationFailure.statusCode(), authenticationFailure.responseBody())) {
+                throw new SmartOtpPendingException(
+                        authenticationFailure.statusCode(),
+                        authenticationFailure.responseBody());
+            }
+            throw authenticationFailure;
+        }
         if (isSmartOtpPending(response)) throw new SmartOtpPendingException(response.statusCode(), response.body());
         Token parsed = parseToken(response.body(), "authenticating");
         setToken(parsed);
@@ -154,7 +164,15 @@ public final class TokenManager {
     }
 
     private void setToken(Token token) { this.token = token; restClient.setAccessToken(token.accessToken()); log.info("SSI access token updated; expiresAt={}", token.expiresAt()); }
-    private boolean isSmartOtpPending(RestClient.ApiResponse response) { JsonNode body = response.body(); return response.statusCode() == SMART_OTP_PENDING_STATUS || body != null && (body.path("code").asInt(-1) == SMART_OTP_PENDING_CODE || body.path("status").asInt(-1) == SMART_OTP_PENDING_STATUS); }
+    private boolean isSmartOtpPending(RestClient.ApiResponse response) {
+        return isSmartOtpPending(response.statusCode(), response.body());
+    }
+    private boolean isSmartOtpPending(int statusCode, JsonNode body) {
+        return statusCode == SMART_OTP_PENDING_STATUS
+                || body != null && (
+                        body.path("code").asInt(-1) == SMART_OTP_PENDING_CODE
+                        || body.path("status").asInt(-1) == SMART_OTP_PENDING_STATUS);
+    }
     private String text(JsonNode node, String field) { return node == null || node.isNull() ? "" : node.path(field).asText(""); }
     private void validateCredentials() { if (config.apiKey() == null || config.apiKey().isBlank() || config.apiSecret() == null || config.apiSecret().isBlank()) throw new AuthenticationException("apiKey and apiSecret are required for SSI authentication"); }
     private void sleep(long millis) { try { Thread.sleep(millis); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AuthenticationException("Interrupted while waiting for Smart OTP approval"); } }
