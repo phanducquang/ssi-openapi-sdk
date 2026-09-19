@@ -38,6 +38,36 @@ class TokenManagerTest {
     }
 
     @Test
+    void smartOtpTreatsHttp401Code401114AsPending() throws Exception {
+        FakeTransport transport = new FakeTransport();
+        transport.enqueue(200, "{\"transactionId\":\"tx-401\"}");
+        transport.enqueueAuthenticationFailure(
+                401,
+                "{\"code\":401114,\"msg\":\"Push-approval is pending\"}");
+        transport.enqueue(
+                200,
+                "{\"data\":{\"accessToken\":\"access-after-401\",\"tokenType\":\"Bearer\",\"expiresAt\":4102444800,\"refreshToken\":\"refresh-1\"}}");
+
+        SsiConfig config = SsiConfig.builder()
+                .apiKey("key")
+                .apiSecret("secret")
+                .smartOtpPollInterval(Duration.ofMillis(1))
+                .smartOtpPollMaxRetries(3)
+                .build();
+
+        TokenManager manager = new TokenManager(transport, config, mapper);
+        Token token = manager.requestAndAuthenticateSmartOtp();
+
+        assertEquals("access-after-401", token.accessToken());
+        assertEquals(
+                List.of(
+                        TokenManager.REQUEST_OTP_PATH,
+                        TokenManager.ACCESS_TOKEN_PATH,
+                        TokenManager.ACCESS_TOKEN_PATH),
+                transport.paths);
+    }
+
+    @Test
     void ensureAuthenticatedRefreshesExpiredTokenInsteadOfRequestingNewOtp() throws Exception {
         FakeTransport transport = new FakeTransport();
         transport.enqueue(200, "{\"data\":{\"accessToken\":\"expired\",\"expiresAt\":1,\"refreshToken\":\"refresh-1\"}}");
@@ -63,11 +93,27 @@ class TokenManagerTest {
     }
 
     private final class FakeTransport implements RestTransport {
-        private final Queue<RestClient.ApiResponse> responses = new ArrayDeque<>();
+        private final Queue<Object> responses = new ArrayDeque<>();
         private final List<String> paths = new ArrayList<>();
         private String accessToken;
-        void enqueue(int status, String body) throws Exception { responses.add(new RestClient.ApiResponse(status, mapper.readTree(body), HttpHeaders.of(Map.of(), (a, b) -> true))); }
-        @Override public RestClient.ApiResponse post(String path, Object body) { paths.add(path); return responses.remove(); }
+        void enqueue(int status, String body) throws Exception {
+            responses.add(new RestClient.ApiResponse(
+                    status,
+                    mapper.readTree(body),
+                    HttpHeaders.of(Map.of(), (a, b) -> true)));
+        }
+        void enqueueAuthenticationFailure(int status, String body) throws Exception {
+            responses.add(new AuthenticationException(
+                    "simulated authentication failure",
+                    status,
+                    mapper.readTree(body)));
+        }
+        @Override public RestClient.ApiResponse post(String path, Object body) {
+            paths.add(path);
+            Object next = responses.remove();
+            if (next instanceof RuntimeException failure) throw failure;
+            return (RestClient.ApiResponse) next;
+        }
         @Override public void setAccessToken(String token) { accessToken = token; }
         @Override public void close() {}
     }
