@@ -30,7 +30,9 @@ class RequestSignerTest {
         String encodedXml = Base64.getEncoder()
                 .encodeToString(xml.getBytes(StandardCharsets.UTF_8));
 
-        String body = "{"accountNo":"1234567","symbol":"VNM"}";
+        String body = """
+                {"accountNo":"1234567","symbol":"VNM"}
+                """.trim();
         String signatureHex = RequestSigner.sign(body, encodedXml);
 
         Signature verifier = Signature.getInstance("SHA256withRSA");
