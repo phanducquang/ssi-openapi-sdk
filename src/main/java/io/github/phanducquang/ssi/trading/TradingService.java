@@ -8,6 +8,7 @@ import io.github.phanducquang.ssi.exception.SsiApiException;
 import io.github.phanducquang.ssi.trading.enums.OrderSide;
 import io.github.phanducquang.ssi.trading.enums.OrderStatus;
 import io.github.phanducquang.ssi.trading.enums.OrderType;
+import io.github.phanducquang.ssi.trading.fco.*;
 import io.github.phanducquang.ssi.trading.model.CancelOrderResponse;
 import io.github.phanducquang.ssi.trading.model.MaxBuySellResponse;
 import io.github.phanducquang.ssi.trading.model.ModifyOrderResponse;
@@ -32,11 +33,13 @@ public final class TradingService {
     private final RestTransport restClient;
     private final ObjectMapper objectMapper;
     private final String privateKey;
+    private final FcoService fcoService;
 
     public TradingService(RestTransport restClient, SsiConfig config, ObjectMapper objectMapper) {
         this.restClient = Objects.requireNonNull(restClient, "restClient");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         this.privateKey = Objects.requireNonNull(config, "config").privateKey();
+        this.fcoService = new FcoService(restClient, config, objectMapper);
     }
 
     public PlaceOrderResponse placeOrder(
@@ -163,6 +166,203 @@ public final class TradingService {
             String accountNo,
             String symbol) {
         return getMaxBuySellInternal(accountNo, symbol, null);
+    }
+
+    public FcoService fco() {
+        return fcoService;
+    }
+
+    public FcoListResponse getFcoByAccountNo(String accountNo) {
+        return fcoService.getFcoByAccountNo(accountNo);
+    }
+
+    public FcoListResponse getFcoByAccountNo(String accountNo, int pageIndex, int pageSize) {
+        return fcoService.getFcoByAccountNo(accountNo, pageIndex, pageSize);
+    }
+
+    public FcoListResponse getFcoBySymbol(String accountNo, String symbol) {
+        return fcoService.getFcoBySymbol(accountNo, symbol, 1, 10);
+    }
+
+    public FcoListResponse getFcoBySymbol(String accountNo, String symbol, int pageIndex, int pageSize) {
+        return fcoService.getFcoBySymbol(accountNo, symbol, pageIndex, pageSize);
+    }
+
+    public FcoListResponse getFcoByStatus(String accountNo, String processStatus) {
+        return fcoService.getFcoByStatus(accountNo, processStatus, 1, 10);
+    }
+
+    public FcoListResponse getFcoByStatus(String accountNo, String processStatus, int pageIndex, int pageSize) {
+        return fcoService.getFcoByStatus(accountNo, processStatus, pageIndex, pageSize);
+    }
+
+    public FcoListResponse getFcoByDate(String accountNo, String fromDate, String toDate) {
+        return fcoService.getFcoByDate(accountNo, fromDate, toDate, 1, 10);
+    }
+
+    public FcoListResponse getFcoByDate(
+            String accountNo,
+            String fromDate,
+            String toDate,
+            int pageIndex,
+            int pageSize) {
+        return fcoService.getFcoByDate(accountNo, fromDate, toDate, pageIndex, pageSize);
+    }
+
+    public FcoInfo getFcoById(String accountNo, String fcoId) {
+        return fcoService.getFcoById(accountNo, fcoId);
+    }
+
+    public FcoOrderBookResponse getFcoOrderBook(String fcoId) {
+        return fcoService.getFcoOrderBook(fcoId);
+    }
+
+    public FcoOrderBookResponse getFcoOrderBook(String fcoId, int pageIndex, int pageSize) {
+        return fcoService.getFcoOrderBook(fcoId, pageIndex, pageSize);
+    }
+
+    public FcoPlaceResponse placeFcoGtd(
+            String accountNo,
+            String symbol,
+            OrderSide side,
+            long quantity,
+            double price,
+            double priceSlip,
+            String fromDate,
+            String toDate) {
+        return fcoService.placeFcoGtd(
+                accountNo, symbol, side, quantity, FcoPrice.fixed(price), priceSlip, fromDate, toDate);
+    }
+
+    public FcoPlaceResponse placeFcoGtd(
+            String accountNo,
+            String symbol,
+            OrderSide side,
+            long quantity,
+            OrderType price,
+            String fromDate,
+            String toDate) {
+        return fcoService.placeFcoGtd(
+                accountNo, symbol, side, quantity, FcoPrice.orderType(price), 0, fromDate, toDate);
+    }
+
+    public FcoPlaceResponse placeFcoStop(
+            String accountNo,
+            String symbol,
+            OrderSide side,
+            long quantity,
+            double stopPrice,
+            FcoOperator operator,
+            String fromDate,
+            String toDate) {
+        return fcoService.placeFcoStop(
+                accountNo, symbol, side, quantity, stopPrice, operator, fromDate, toDate);
+    }
+
+    public FcoPlaceResponse placeFcoStopLimit(
+            String accountNo,
+            String symbol,
+            OrderSide side,
+            long quantity,
+            double price,
+            double priceSlip,
+            double stopPrice,
+            FcoOperator operator,
+            String fromDate,
+            String toDate) {
+        return fcoService.placeFcoStopLimit(
+                accountNo, symbol, side, quantity, price, priceSlip, stopPrice, operator, fromDate, toDate);
+    }
+
+    public FcoPlaceResponse placeFcoTrailingStop(
+            String accountNo,
+            String symbol,
+            OrderSide side,
+            long quantity,
+            double activePrice,
+            double trailingAmount,
+            String fromDate,
+            String toDate) {
+        return fcoService.placeFcoTrailingStop(
+                accountNo, symbol, side, quantity, activePrice, trailingAmount, fromDate, toDate);
+    }
+
+    public FcoPlaceResponse placeFcoTrailingStopLimit(
+            String accountNo,
+            String symbol,
+            OrderSide side,
+            long quantity,
+            double activePrice,
+            double trailingAmount,
+            double priceSlip,
+            String fromDate,
+            String toDate) {
+        return fcoService.placeFcoTrailingStopLimit(
+                accountNo, symbol, side, quantity, activePrice, trailingAmount, priceSlip, fromDate, toDate);
+    }
+
+    public FcoPlaceResponse placeFcoOco(
+            String accountNo,
+            String symbol,
+            OrderSide side,
+            long quantity,
+            double tpActivePrice,
+            double slActivePrice,
+            FcoPrice tpPrice,
+            FcoPrice slPrice,
+            double tpSlip,
+            double slSlip,
+            String fromDate,
+            String toDate) {
+        return fcoService.placeFcoOco(
+                accountNo,
+                symbol,
+                side,
+                quantity,
+                tpActivePrice,
+                slActivePrice,
+                tpPrice,
+                slPrice,
+                tpSlip,
+                slSlip,
+                fromDate,
+                toDate);
+    }
+
+    public FcoPlaceResponse placeFcoBullBear(
+            String accountNo,
+            String symbol,
+            OrderSide side,
+            long quantity,
+            FcoPrice price,
+            double priceSlip,
+            double tpActivePrice,
+            double slActivePrice,
+            FcoPrice tpPrice,
+            FcoPrice slPrice,
+            double tpSlip,
+            double slSlip,
+            String fromDate,
+            String toDate) {
+        return fcoService.placeFcoBullBear(
+                accountNo,
+                symbol,
+                side,
+                quantity,
+                price,
+                priceSlip,
+                tpActivePrice,
+                slActivePrice,
+                tpPrice,
+                slPrice,
+                tpSlip,
+                slSlip,
+                fromDate,
+                toDate);
+    }
+
+    public FcoCancelResponse cancelFco(String fcoId) {
+        return fcoService.cancelFco(fcoId);
     }
 
     private ModifyOrderResponse modifyOrder(
