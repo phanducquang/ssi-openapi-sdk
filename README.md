@@ -139,6 +139,34 @@ Unit tests cover Smart OTP polling, refresh-token reuse, reconnect without impli
 
 Live SSI authentication and WebSocket integration still requires real SSI credentials and OTP/Smart OTP approval and is not performed by automated tests.
 
+## REST APIs
+
+The SDK now exposes authenticated read-only REST services in addition to WebSocket streaming.
+
+```java
+try (SsiClient client = SsiClient.create(config)) {
+    client.auth().authenticateWithOtp(otp);
+
+    var accounts = client.account().getAccountInfo();
+
+    var candles = client.marketData()
+            .getOhlc1DayHistorical("VNM", "2026/09/01", "2026/09/17");
+
+    var vn30 = client.marketData().getIndexSummary("VN30");
+    var hoseSymbols = client.marketData().getSecuritiesInfoByBoard(Board.HOSE);
+    var masterData = client.marketData().getMasterData();
+}
+```
+
+Implemented REST groups:
+- Account: `GET /api/v3/account/info`.
+- Market data: OHLC, index list, index summary, securities info, securities summary and master data.
+- Master data automatically follows `pagesCount` and returns the combined list.
+- Business REST calls ensure authentication internally and retry once with a refresh token after an HTTP 401/403.
+- The shared REST transport supports GET/POST/PUT/DELETE, query parameters, custom headers and raw JSON bodies for the upcoming signed trading APIs.
+
+Bulk `/api/v3/data/ohlc/download` remains intentionally unimplemented because the upstream Python SDK also leaves it unimplemented.
+
 ## Next milestones
 
 1. Live integration validation against SSI with real credentials.
