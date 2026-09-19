@@ -5,6 +5,7 @@ import io.github.phanducquang.ssi.account.AccountService;
 import io.github.phanducquang.ssi.auth.TokenManager;
 import io.github.phanducquang.ssi.config.SsiConfig;
 import io.github.phanducquang.ssi.marketdata.MarketDataService;
+import io.github.phanducquang.ssi.portfolio.PortfolioService;
 import io.github.phanducquang.ssi.streaming.StreamingMessageDispatcher;
 import io.github.phanducquang.ssi.streaming.StreamingService;
 import io.github.phanducquang.ssi.transport.AuthenticatedRestClient;
@@ -18,6 +19,7 @@ public final class SsiClient implements AutoCloseable {
     private final TokenManager tokenManager;
     private final AccountService accountService;
     private final MarketDataService marketDataService;
+    private final PortfolioService portfolioService;
     private final StreamingService streamingService;
 
     private SsiClient(SsiConfig config) {
@@ -31,6 +33,7 @@ public final class SsiClient implements AutoCloseable {
                 new AuthenticatedRestClient(restClient, tokenManager);
         this.accountService = new AccountService(authenticatedRestClient);
         this.marketDataService = new MarketDataService(authenticatedRestClient);
+        this.portfolioService = new PortfolioService(authenticatedRestClient, config);
 
         SsiWebSocketClient webSocketClient = new SsiWebSocketClient(config, objectMapper);
         this.streamingService = new StreamingService(
@@ -54,6 +57,10 @@ public final class SsiClient implements AutoCloseable {
 
     public MarketDataService marketData() {
         return marketDataService;
+    }
+
+    public PortfolioService portfolio() {
+        return portfolioService;
     }
 
     public StreamingService streaming() {

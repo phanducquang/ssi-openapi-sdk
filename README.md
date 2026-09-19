@@ -155,12 +155,18 @@ try (SsiClient client = SsiClient.create(config)) {
     var vn30 = client.marketData().getIndexSummary("VN30");
     var hoseSymbols = client.marketData().getSecuritiesInfoByBoard(Board.HOSE);
     var masterData = client.marketData().getMasterData();
+
+    var equityBalance = client.portfolio().getEquityBalance(accountNo);
+    var positions = client.portfolio().getEquityPositions(accountNo);
+    var todayOrders = client.portfolio().getTodayOrders(accountNo);
+    var ppmmr = client.portfolio().getEquityPpmmr(accountNo);
 }
 ```
 
 Implemented REST groups:
 - Account: `GET /api/v3/account/info`.
 - Market data: OHLC, index list, index summary, securities info, securities summary and master data.
+- Portfolio: equity/derivative balance, order history, equity/derivative positions and PPMMR.
 - Master data automatically follows `pagesCount` and returns the combined list.
 - Business REST calls ensure authentication internally and retry once with a refresh token after an HTTP 401/403.
 - The shared REST transport supports GET/POST/PUT/DELETE, query parameters, custom headers and raw JSON bodies for the upcoming signed trading APIs.
@@ -169,8 +175,9 @@ Bulk `/api/v3/data/ohlc/download` remains intentionally unimplemented because th
 
 ## Next milestones
 
-1. Live integration validation against SSI with real credentials.
-2. TRADING-channel stream: order status, portfolio and FCO events.
-3. Market Data REST APIs.
-4. Account/portfolio/trading/FCO REST APIs.
-5. Publishing/release automation.
+1. Core Trading REST APIs: place, modify, cancel and max buy/sell.
+2. Shared RSA SHA-256 request signing and request-id generation for signed trading operations.
+3. TRADING-channel stream: order status and portfolio events, reusing the newly ported order/portfolio models.
+4. FCO REST APIs and FCO streaming events.
+5. Live integration validation against SSI with real credentials.
+6. Publishing/release automation.
