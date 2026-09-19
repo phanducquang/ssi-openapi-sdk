@@ -174,6 +174,11 @@ try (SsiClient client = SsiClient.create(config)) {
 
     client.streaming().subscribeOrderStatus(accountNo);
     client.streaming().subscribePortfolio(accountNo);
+    client.streaming().onFcoOrderUpdate(System.out::println);
+
+    var fcoOrders = client.trading().getFcoByAccountNo(accountNo);
+    // FCO mutations are available through client.trading(), but should only
+    // be exercised against a controlled trading account.
 }
 ```
 
@@ -182,8 +187,9 @@ Implemented REST groups:
 - Market data: OHLC, index list, index summary, securities info, securities summary and master data.
 - Portfolio: equity/derivative balance, order history, equity/derivative positions and PPMMR.
 - Core trading: place LO/MTL/ATO/ATC, modify price/quantity, cancel order and max buy/sell.
-- TRADING WebSocket: real-time order-status and portfolio subscriptions, typed callbacks, wildcard account support, reconnect and automatic subscription replay.
-- Signed trading mutations use RSA PKCS#1 v1.5 SHA-256 and the `X-Signature` header, matching the upstream Python SDK's Base64(XML RSA) private-key format.
+- TRADING WebSocket: real-time order-status, portfolio and typed FCO event callbacks, wildcard account support, reconnect and automatic subscription replay.
+- FCO: list/query, order book, GTD, stop, stop-limit, trailing-stop, trailing-stop-limit, OCO, bull-bear and cancel.
+- Signed trading and FCO mutations use RSA PKCS#1 v1.5 SHA-256 and the `X-Signature` header, matching the upstream Python SDK's Base64(XML RSA) private-key format.
 - Master data automatically follows `pagesCount` and returns the combined list.
 - Business REST calls ensure authentication internally and retry once with a refresh token after an HTTP 401/403.
 - The shared REST transport supports GET/POST/PUT/DELETE, query parameters, custom headers and raw JSON bodies for the upcoming signed trading APIs.
@@ -192,7 +198,7 @@ Bulk `/api/v3/data/ohlc/download` remains intentionally unimplemented because th
 
 ## Next milestones
 
-1. FCO REST APIs: query, order book, place advanced conditional orders and cancel.
-2. FCO WebSocket event model and typed callback for `eventType=fcoEvent`.
-3. Live integration validation against SSI with real credentials, including signed trading requests in a controlled test account.
-4. Publishing/release automation.
+1. Live integration validation against SSI with real credentials: auth, market-data REST, DATA/TRADING streaming and reconnect.
+2. Controlled trading-account validation for RSA-signed place/modify/cancel and FCO payloads; never run these mutations in public CI.
+3. Review any protocol differences discovered by live testing and add recorded fixture tests.
+4. Publishing/release automation and versioned Java artifacts.
