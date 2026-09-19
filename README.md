@@ -160,6 +160,13 @@ try (SsiClient client = SsiClient.create(config)) {
     var positions = client.portfolio().getEquityPositions(accountNo);
     var todayOrders = client.portfolio().getTodayOrders(accountNo);
     var ppmmr = client.portfolio().getEquityPpmmr(accountNo);
+
+    var buyingPower = client.trading()
+            .getMaxBuySell(accountNo, "VNM", 61_000);
+
+    // Signed mutation APIs are also available. These examples are intentionally
+    // not executed by CI because they can create real trading side effects.
+    // client.trading().placeLimitOrder(accountNo, "VNM", OrderSide.BUY, 100, 61_000);
 }
 ```
 
@@ -167,6 +174,8 @@ Implemented REST groups:
 - Account: `GET /api/v3/account/info`.
 - Market data: OHLC, index list, index summary, securities info, securities summary and master data.
 - Portfolio: equity/derivative balance, order history, equity/derivative positions and PPMMR.
+- Core trading: place LO/MTL/ATO/ATC, modify price/quantity, cancel order and max buy/sell.
+- Signed trading mutations use RSA PKCS#1 v1.5 SHA-256 and the `X-Signature` header, matching the upstream Python SDK's Base64(XML RSA) private-key format.
 - Master data automatically follows `pagesCount` and returns the combined list.
 - Business REST calls ensure authentication internally and retry once with a refresh token after an HTTP 401/403.
 - The shared REST transport supports GET/POST/PUT/DELETE, query parameters, custom headers and raw JSON bodies for the upcoming signed trading APIs.
@@ -175,9 +184,8 @@ Bulk `/api/v3/data/ohlc/download` remains intentionally unimplemented because th
 
 ## Next milestones
 
-1. Core Trading REST APIs: place, modify, cancel and max buy/sell.
-2. Shared RSA SHA-256 request signing and request-id generation for signed trading operations.
-3. TRADING-channel stream: order status and portfolio events, reusing the newly ported order/portfolio models.
-4. FCO REST APIs and FCO streaming events.
-5. Live integration validation against SSI with real credentials.
-6. Publishing/release automation.
+1. TRADING-channel WebSocket: order status and portfolio events, reusing the ported order/portfolio enums and models.
+2. FCO REST APIs: query, order book, place advanced conditional orders and cancel.
+3. FCO / trading streaming event models where exposed by the upstream protocol.
+4. Live integration validation against SSI with real credentials, including signed trading requests in a controlled test account.
+5. Publishing/release automation.
