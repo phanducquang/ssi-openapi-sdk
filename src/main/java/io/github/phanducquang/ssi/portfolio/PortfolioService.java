@@ -404,13 +404,19 @@ public final class PortfolioService {
         }
         if (node.isFloatingPointNumber()) {
             double value = node.asDouble();
-            return value == Math.rint(value) ? (long) value : value;
+            if (value == Math.rint(value)) {
+                return (long) value;
+            }
+            return value;
         }
 
         String raw = node.asText("");
         try {
             double value = Double.parseDouble(raw);
-            return value == Math.rint(value) ? (long) value : value;
+            if (value == Math.rint(value)) {
+                return (long) value;
+            }
+            return value;
         } catch (NumberFormatException ignored) {
             OrderSide side = OrderSide.fromValue(raw);
             return side == null ? 0L : side;
