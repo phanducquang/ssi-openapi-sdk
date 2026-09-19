@@ -1,6 +1,7 @@
 package io.github.phanducquang.ssi.streaming;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.github.phanducquang.ssi.streaming.model.FcoOrderUpdateMessage;
 import io.github.phanducquang.ssi.streaming.model.OrderStatusMessage;
 import io.github.phanducquang.ssi.streaming.model.PortfolioMessage;
 import io.github.phanducquang.ssi.streaming.model.QuoteMessage;
@@ -8,6 +9,8 @@ import io.github.phanducquang.ssi.streaming.model.TradeMessage;
 import io.github.phanducquang.ssi.trading.enums.OrderSide;
 import io.github.phanducquang.ssi.trading.enums.OrderStatus;
 import io.github.phanducquang.ssi.trading.enums.OrderType;
+import io.github.phanducquang.ssi.trading.fco.FcoStatus;
+import io.github.phanducquang.ssi.trading.fco.FcoType;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -84,19 +87,37 @@ class StreamingMessageDispatcherTest {
     }
 
     @Test
-    void doesNotMisclassifyFcoEventAsOrderStatus() {
+    void dispatchesFcoOrderUpdateSeparatelyFromNormalOrderStatus() {
         StreamingMessageDispatcher dispatcher = new StreamingMessageDispatcher(new ObjectMapper());
-        AtomicReference<OrderStatusMessage> received = new AtomicReference<>();
-        dispatcher.onOrderStatus(received::set);
+        AtomicReference<OrderStatusMessage> normalOrder = new AtomicReference<>();
+        AtomicReference<FcoOrderUpdateMessage> fcoOrder = new AtomicReference<>();
+        dispatcher.onOrderStatus(normalOrder::set);
+        dispatcher.onFcoOrderUpdate(fcoOrder::set);
 
         dispatcher.dispatch("""
                 {"channel":"TRADING","topic":"order.1234567","data":{
                   "eventType":"fcoEvent",
-                  "fcoId":"FCO-1"
+                  "fcoId":"FCO-1",
+                  "processStatus":"WAIT",
+                  "matchedQuantity":20,
+                  "isPlaceOrder":true,
+                  "symbol":"VNM",
+                  "quantity":100,
+                  "price":"61000",
+                  "accountNo":"1234567",
+                  "updatedTime":"2026-09-19T10:00:00",
+                  "status":"PD",
+                  "message":"",
+                  "username":"client",
+                  "type":"stop"
                 }}
                 """);
 
-        assertEquals(null, received.get());
+        assertEquals(null, normalOrder.get());
+        assertEquals("FCO-1", fcoOrder.get().fcoId());
+        assertEquals(FcoStatus.WAIT, fcoOrder.get().processStatus());
+        assertEquals(FcoType.STOP, fcoOrder.get().type());
+        assertEquals(20L, fcoOrder.get().matchedQuantity());
     }
 
     @Test

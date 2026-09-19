@@ -7,6 +7,8 @@ import io.github.phanducquang.ssi.streaming.model.*;
 import io.github.phanducquang.ssi.trading.enums.OrderSide;
 import io.github.phanducquang.ssi.trading.enums.OrderStatus;
 import io.github.phanducquang.ssi.trading.enums.OrderType;
+import io.github.phanducquang.ssi.trading.fco.FcoStatus;
+import io.github.phanducquang.ssi.trading.fco.FcoType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +32,7 @@ public final class StreamingMessageDispatcher {
     private final List<Consumer<HeartbeatMessage>> heartbeatListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<OrderStatusMessage>> orderStatusListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<PortfolioMessage>> portfolioListeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<FcoOrderUpdateMessage>> fcoOrderUpdateListeners = new CopyOnWriteArrayList<>();
 
     public StreamingMessageDispatcher(ObjectMapper objectMapper) { this.objectMapper = objectMapper; }
 
@@ -48,7 +51,9 @@ public final class StreamingMessageDispatcher {
 
         if ("TRADING".equals(channel)) {
             if (topic.startsWith("order.")) {
-                if (!"fcoEvent".equals(data.path("eventType").asText(""))) {
+                if ("fcoEvent".equals(data.path("eventType").asText(""))) {
+                    notifyListeners(fcoOrderUpdateListeners, parseFcoOrderUpdate(data), "fco-order-update");
+                } else {
                     notifyListeners(orderStatusListeners, parseOrderStatus(data), "order-status");
                 }
             } else if (topic.startsWith("portfolio.")) {
@@ -79,6 +84,7 @@ public final class StreamingMessageDispatcher {
     public StreamingMessageDispatcher onHeartbeat(Consumer<HeartbeatMessage> listener) { heartbeatListeners.add(listener); return this; }
     public StreamingMessageDispatcher onOrderStatus(Consumer<OrderStatusMessage> listener) { orderStatusListeners.add(listener); return this; }
     public StreamingMessageDispatcher onPortfolio(Consumer<PortfolioMessage> listener) { portfolioListeners.add(listener); return this; }
+    public StreamingMessageDispatcher onFcoOrderUpdate(Consumer<FcoOrderUpdateMessage> listener) { fcoOrderUpdateListeners.add(listener); return this; }
 
     private TradeMessage parseTrade(JsonNode d) { return new TradeMessage(text(d,"t"), text(d,"s"), decimal(d,"p"), longValue(d,"q"), defaultText(d,"si","U"), longValue(d,"v")); }
     private IntervalMessage parseInterval(JsonNode d) { return new IntervalMessage(text(d,"st"), text(d,"t"), text(d,"s"), decimal(d,"o"), decimal(d,"h"), decimal(d,"l"), decimal(d,"c"), longValue(d,"v")); }
@@ -111,6 +117,23 @@ public final class StreamingMessageDispatcher {
                 doubleValue(d, "totalAsset"),
                 doubleValue(d, "cashBalance"),
                 doubleValue(d, "stockValue"));
+    }
+    private FcoOrderUpdateMessage parseFcoOrderUpdate(JsonNode d) {
+        return new FcoOrderUpdateMessage(
+                text(d, "fcoId"),
+                FcoStatus.fromValue(text(d, "processStatus")),
+                longValue(d, "matchedQuantity"),
+                d.path("isPlaceOrder").asBoolean(false),
+                text(d, "symbol"),
+                longValue(d, "quantity"),
+                text(d, "price"),
+                text(d, "accountNo"),
+                text(d, "updatedTime"),
+                text(d, "status"),
+                text(d, "message"),
+                text(d, "username"),
+                text(d, "eventType"),
+                FcoType.fromValue(text(d, "type")));
     }
 
     private List<PriceLevel> levels(JsonNode node) {

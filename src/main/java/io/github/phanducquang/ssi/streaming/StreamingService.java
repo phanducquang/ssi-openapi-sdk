@@ -118,6 +118,7 @@ public final class StreamingService implements AutoCloseable {
     public StreamingService onHeartbeat(Consumer<HeartbeatMessage> listener) { dispatcher.onHeartbeat(listener); return this; }
     public StreamingService onOrderStatus(Consumer<OrderStatusMessage> listener) { dispatcher.onOrderStatus(listener); return this; }
     public StreamingService onPortfolio(Consumer<PortfolioMessage> listener) { dispatcher.onPortfolio(listener); return this; }
+    public StreamingService onFcoOrderUpdate(Consumer<FcoOrderUpdateMessage> listener) { dispatcher.onFcoOrderUpdate(listener); return this; }
     public StreamingService onConnected(Runnable listener) { connectedListener = Objects.requireNonNull(listener); return this; }
     public StreamingService onDisconnected(Consumer<DisconnectEvent> listener) { disconnectedListener = Objects.requireNonNull(listener); return this; }
     public StreamingService onReconnecting(Consumer<ReconnectEvent> listener) { reconnectingListener = Objects.requireNonNull(listener); return this; }
