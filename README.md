@@ -139,10 +139,66 @@ Unit tests cover Smart OTP polling, refresh-token reuse, reconnect without impli
 
 Live SSI authentication and WebSocket integration still requires real SSI credentials and OTP/Smart OTP approval and is not performed by automated tests.
 
+## REST APIs
+
+The SDK now exposes authenticated read-only REST services in addition to WebSocket streaming.
+
+```java
+try (SsiClient client = SsiClient.create(config)) {
+    client.auth().authenticateWithOtp(otp);
+
+    var accounts = client.account().getAccountInfo();
+
+    var candles = client.marketData()
+            .getOhlc1DayHistorical("VNM", "2026/09/01", "2026/09/17");
+
+    var vn30 = client.marketData().getIndexSummary("VN30");
+    var hoseSymbols = client.marketData().getSecuritiesInfoByBoard(Board.HOSE);
+    var masterData = client.marketData().getMasterData();
+
+    var equityBalance = client.portfolio().getEquityBalance(accountNo);
+    var positions = client.portfolio().getEquityPositions(accountNo);
+    var todayOrders = client.portfolio().getTodayOrders(accountNo);
+    var ppmmr = client.portfolio().getEquityPpmmr(accountNo);
+
+    var buyingPower = client.trading()
+            .getMaxBuySell(accountNo, "VNM", 61_000);
+
+    // Signed mutation APIs are also available. These examples are intentionally
+    // not executed by CI because they can create real trading side effects.
+    // client.trading().placeLimitOrder(accountNo, "VNM", OrderSide.BUY, 100, 61_000);
+
+    client.streaming()
+            .onOrderStatus(System.out::println)
+            .onPortfolio(System.out::println);
+
+    client.streaming().subscribeOrderStatus(accountNo);
+    client.streaming().subscribePortfolio(accountNo);
+    client.streaming().onFcoOrderUpdate(System.out::println);
+
+    var fcoOrders = client.trading().getFcoByAccountNo(accountNo);
+    // FCO mutations are available through client.trading(), but should only
+    // be exercised against a controlled trading account.
+}
+```
+
+Implemented REST groups:
+- Account: `GET /api/v3/account/info`.
+- Market data: OHLC, index list, index summary, securities info, securities summary and master data.
+- Portfolio: equity/derivative balance, order history, equity/derivative positions and PPMMR.
+- Core trading: place LO/MTL/ATO/ATC, modify price/quantity, cancel order and max buy/sell.
+- TRADING WebSocket: real-time order-status, portfolio and typed FCO event callbacks, wildcard account support, reconnect and automatic subscription replay.
+- FCO: list/query, order book, GTD, stop, stop-limit, trailing-stop, trailing-stop-limit, OCO, bull-bear and cancel.
+- Signed trading and FCO mutations use RSA PKCS#1 v1.5 SHA-256 and the `X-Signature` header, matching the upstream Python SDK's Base64(XML RSA) private-key format.
+- Master data automatically follows `pagesCount` and returns the combined list.
+- Business REST calls ensure authentication internally and retry once with a refresh token after an HTTP 401/403.
+- The shared REST transport supports GET/POST/PUT/DELETE, query parameters, custom headers and raw JSON bodies for the upcoming signed trading APIs.
+
+Bulk `/api/v3/data/ohlc/download` remains intentionally unimplemented because the upstream Python SDK also leaves it unimplemented.
+
 ## Next milestones
 
-1. Live integration validation against SSI with real credentials.
-2. TRADING-channel stream: order status, portfolio and FCO events.
-3. Market Data REST APIs.
-4. Account/portfolio/trading/FCO REST APIs.
-5. Publishing/release automation.
+1. Live integration validation against SSI with real credentials: auth, market-data REST, DATA/TRADING streaming and reconnect.
+2. Controlled trading-account validation for RSA-signed place/modify/cancel and FCO payloads; never run these mutations in public CI.
+3. Review any protocol differences discovered by live testing and add recorded fixture tests.
+4. Publishing/release automation and versioned Java artifacts.

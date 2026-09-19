@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.phanducquang.ssi.auth.TokenManager;
 import io.github.phanducquang.ssi.config.SsiConfig;
 import io.github.phanducquang.ssi.exception.AuthenticationException;
+import io.github.phanducquang.ssi.marketdata.enums.Board;
 import io.github.phanducquang.ssi.streaming.enums.StreamingMethod;
 import io.github.phanducquang.ssi.streaming.model.StreamingRequest;
 import io.github.phanducquang.ssi.transport.RestClient;
@@ -92,6 +93,62 @@ class StreamingServiceReconnectTest {
             assertNotNull(authRequired.get());
             assertEquals(2, webSocket.connectCount);
             assertEquals(List.of(TokenManager.ACCESS_TOKEN_PATH), rest.paths);
+        }
+    }
+
+    @Test
+    void tradingSubscriptionsAreTrackedAndReplayable() throws Exception {
+        SsiConfig config = config();
+        FakeRestTransport rest = new FakeRestTransport();
+        rest.enqueue(200, tokenResponse("access-1", Instant.now().getEpochSecond() + 3600, "refresh-1"));
+        TokenManager tokenManager = new TokenManager(rest, config, mapper);
+        tokenManager.authenticateWithOtp("123456");
+        FakeWebSocketTransport webSocket = new FakeWebSocketTransport();
+
+        try (StreamingService streaming = service(tokenManager, webSocket, config)) {
+            streaming.connectWithOtp("ignored");
+            streaming.subscribeOrderStatus("1234567");
+            streaming.subscribePortfolio();
+
+            assertTrue(streaming.activeSubscriptions().stream().anyMatch(
+                    subscription -> subscription.channel() == io.github.phanducquang.ssi.streaming.enums.StreamingChannel.TRADING
+                            && subscription.topic().equals("order.1234567")));
+            assertTrue(streaming.activeSubscriptions().stream().anyMatch(
+                    subscription -> subscription.channel() == io.github.phanducquang.ssi.streaming.enums.StreamingChannel.TRADING
+                            && subscription.topic().equals("portfolio.*")));
+
+            webSocket.triggerUnexpectedClose();
+            await(() -> webSocket.connectCount >= 2 && webSocket.sent.size() >= 3, Duration.ofSeconds(1));
+
+            StreamingRequest replay = (StreamingRequest) webSocket.sent.get(2);
+            assertEquals(io.github.phanducquang.ssi.streaming.enums.StreamingChannel.TRADING, replay.channel());
+            assertEquals(List.of("order.1234567", "portfolio.*"), replay.topics());
+        }
+    }
+
+    @Test
+    void boardAndIndexConvenienceMethodsTrackUnderlyingDataTopics() throws Exception {
+        SsiConfig config = config();
+        FakeRestTransport rest = new FakeRestTransport();
+        rest.enqueue(200, tokenResponse("access-1", Instant.now().getEpochSecond() + 3600, "refresh-1"));
+        TokenManager tokenManager = new TokenManager(rest, config, mapper);
+        tokenManager.authenticateWithOtp("123456");
+        FakeWebSocketTransport webSocket = new FakeWebSocketTransport();
+
+        try (StreamingService streaming = service(tokenManager, webSocket, config)) {
+            streaming.connectWithOtp("ignored");
+            streaming.subscribeBoard(Board.HOSE);
+            streaming.subscribeIndex("VN30");
+
+            assertEquals(6, streaming.activeSubscriptions().size());
+            assertTrue(streaming.activeSubscriptions().stream().anyMatch(subscription -> subscription.topic().equals("trade.HOSE")));
+            assertTrue(streaming.activeSubscriptions().stream().anyMatch(subscription -> subscription.topic().equals("quote.VN30")));
+            assertTrue(streaming.activeSubscriptions().stream().anyMatch(subscription -> subscription.topic().equals("room.VN30")));
+
+            streaming.unsubscribeBoard(Board.HOSE);
+
+            assertEquals(3, streaming.activeSubscriptions().size());
+            assertTrue(streaming.activeSubscriptions().stream().allMatch(subscription -> subscription.topic().endsWith(".VN30")));
         }
     }
 
