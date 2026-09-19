@@ -5,6 +5,7 @@ import io.github.phanducquang.ssi.auth.TokenManager;
 import io.github.phanducquang.ssi.config.SsiConfig;
 import io.github.phanducquang.ssi.exception.AuthenticationException;
 import io.github.phanducquang.ssi.exception.WebSocketException;
+import io.github.phanducquang.ssi.marketdata.enums.Board;
 import io.github.phanducquang.ssi.streaming.enums.DataTopic;
 import io.github.phanducquang.ssi.streaming.enums.StreamingChannel;
 import io.github.phanducquang.ssi.streaming.enums.StreamingMethod;
@@ -69,6 +70,11 @@ public final class StreamingService implements AutoCloseable {
     public void subscribePutThrough(String... symbols) { subscribe(DataTopic.PUT, Arrays.asList(symbols)); }
     public void subscribeOddLot(String... symbols) { subscribe(DataTopic.ODD_LOT, Arrays.asList(symbols)); }
     public void subscribeSymbol(String... symbols) { subscribeTrade(symbols); subscribeQuote(symbols); subscribeForeignRoom(symbols); }
+    public void subscribeBoard(Board... boards) {
+        Objects.requireNonNull(boards, "boards");
+        subscribeSymbol(Arrays.stream(boards).filter(Objects::nonNull).map(Board::value).toArray(String[]::new));
+    }
+    public void subscribeIndex(String... indices) { subscribeSymbol(indices); }
     public void subscribeOrderStatus() { subscribeOrderStatus("*"); }
     public void subscribeOrderStatus(String accountNo) { sendTracked(StreamingMethod.SUBSCRIBE, StreamingChannel.TRADING, List.of(tradingTopic("order", accountNo))); }
     public void subscribePortfolio() { subscribePortfolio("*"); }
@@ -86,6 +92,12 @@ public final class StreamingService implements AutoCloseable {
     public void unsubscribeMarketStatus(String... markets) { unsubscribe(DataTopic.MARKET, Arrays.asList(markets)); }
     public void unsubscribePutThrough(String... symbols) { unsubscribe(DataTopic.PUT, Arrays.asList(symbols)); }
     public void unsubscribeOddLot(String... symbols) { unsubscribe(DataTopic.ODD_LOT, Arrays.asList(symbols)); }
+    public void unsubscribeSymbol(String... symbols) { unsubscribeTrade(symbols); unsubscribeQuote(symbols); unsubscribeForeignRoom(symbols); }
+    public void unsubscribeBoard(Board... boards) {
+        Objects.requireNonNull(boards, "boards");
+        unsubscribeSymbol(Arrays.stream(boards).filter(Objects::nonNull).map(Board::value).toArray(String[]::new));
+    }
+    public void unsubscribeIndex(String... indices) { unsubscribeSymbol(indices); }
     public void unsubscribeOrderStatus() { unsubscribeOrderStatus("*"); }
     public void unsubscribeOrderStatus(String accountNo) { sendTracked(StreamingMethod.UNSUBSCRIBE, StreamingChannel.TRADING, List.of(tradingTopic("order", accountNo))); }
     public void unsubscribePortfolio() { unsubscribePortfolio("*"); }
