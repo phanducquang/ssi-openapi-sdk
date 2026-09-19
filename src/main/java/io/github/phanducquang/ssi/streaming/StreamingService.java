@@ -69,6 +69,10 @@ public final class StreamingService implements AutoCloseable {
     public void subscribePutThrough(String... symbols) { subscribe(DataTopic.PUT, Arrays.asList(symbols)); }
     public void subscribeOddLot(String... symbols) { subscribe(DataTopic.ODD_LOT, Arrays.asList(symbols)); }
     public void subscribeSymbol(String... symbols) { subscribeTrade(symbols); subscribeQuote(symbols); subscribeForeignRoom(symbols); }
+    public void subscribeOrderStatus() { subscribeOrderStatus("*"); }
+    public void subscribeOrderStatus(String accountNo) { sendTracked(StreamingMethod.SUBSCRIBE, StreamingChannel.TRADING, List.of(tradingTopic("order", accountNo))); }
+    public void subscribePortfolio() { subscribePortfolio("*"); }
+    public void subscribePortfolio(String accountNo) { sendTracked(StreamingMethod.SUBSCRIBE, StreamingChannel.TRADING, List.of(tradingTopic("portfolio", accountNo))); }
 
     public void subscribeOhlcv(Timeframe timeframe, String... symbols) {
         Objects.requireNonNull(timeframe, "timeframe");
@@ -82,6 +86,10 @@ public final class StreamingService implements AutoCloseable {
     public void unsubscribeMarketStatus(String... markets) { unsubscribe(DataTopic.MARKET, Arrays.asList(markets)); }
     public void unsubscribePutThrough(String... symbols) { unsubscribe(DataTopic.PUT, Arrays.asList(symbols)); }
     public void unsubscribeOddLot(String... symbols) { unsubscribe(DataTopic.ODD_LOT, Arrays.asList(symbols)); }
+    public void unsubscribeOrderStatus() { unsubscribeOrderStatus("*"); }
+    public void unsubscribeOrderStatus(String accountNo) { sendTracked(StreamingMethod.UNSUBSCRIBE, StreamingChannel.TRADING, List.of(tradingTopic("order", accountNo))); }
+    public void unsubscribePortfolio() { unsubscribePortfolio("*"); }
+    public void unsubscribePortfolio(String accountNo) { sendTracked(StreamingMethod.UNSUBSCRIBE, StreamingChannel.TRADING, List.of(tradingTopic("portfolio", accountNo))); }
 
     public void unsubscribeOhlcv(Timeframe timeframe, String... symbols) {
         Objects.requireNonNull(timeframe, "timeframe");
@@ -108,6 +116,8 @@ public final class StreamingService implements AutoCloseable {
     public StreamingService onPutThrough(Consumer<PutMessage> listener) { dispatcher.onPutThrough(listener); return this; }
     public StreamingService onOddLot(Consumer<OddLotMessage> listener) { dispatcher.onOddLot(listener); return this; }
     public StreamingService onHeartbeat(Consumer<HeartbeatMessage> listener) { dispatcher.onHeartbeat(listener); return this; }
+    public StreamingService onOrderStatus(Consumer<OrderStatusMessage> listener) { dispatcher.onOrderStatus(listener); return this; }
+    public StreamingService onPortfolio(Consumer<PortfolioMessage> listener) { dispatcher.onPortfolio(listener); return this; }
     public StreamingService onConnected(Runnable listener) { connectedListener = Objects.requireNonNull(listener); return this; }
     public StreamingService onDisconnected(Consumer<DisconnectEvent> listener) { disconnectedListener = Objects.requireNonNull(listener); return this; }
     public StreamingService onReconnecting(Consumer<ReconnectEvent> listener) { reconnectingListener = Objects.requireNonNull(listener); return this; }
@@ -177,6 +187,10 @@ public final class StreamingService implements AutoCloseable {
     private void unsubscribe(DataTopic topic, List<String> symbols) { sendTracked(StreamingMethod.UNSUBSCRIBE, StreamingChannel.DATA, topics(topic, symbols)); }
     private List<String> topics(DataTopic topic, List<String> values) { return values.stream().filter(Objects::nonNull).map(String::trim).filter(v -> !v.isBlank()).distinct().map(v -> topic.prefix() + "." + v).toList(); }
     private List<String> normalized(String[] values) { return Arrays.stream(values).filter(Objects::nonNull).map(String::trim).filter(v -> !v.isBlank()).distinct().toList(); }
+    private String tradingTopic(String prefix, String accountNo) {
+        if (accountNo == null || accountNo.isBlank()) throw new IllegalArgumentException("accountNo is required; use * for all accounts");
+        return prefix + "." + accountNo.trim();
+    }
 
     private void sendTracked(StreamingMethod method, StreamingChannel channel, List<String> topics) {
         if (topics.isEmpty()) return;

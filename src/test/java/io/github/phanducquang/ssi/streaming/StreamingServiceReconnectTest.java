@@ -96,6 +96,36 @@ class StreamingServiceReconnectTest {
     }
 
     @Test
+    void tradingSubscriptionsAreTrackedAndReplayable() throws Exception {
+        SsiConfig config = config();
+        FakeRestTransport rest = new FakeRestTransport();
+        rest.enqueue(200, tokenResponse("access-1", Instant.now().getEpochSecond() + 3600, "refresh-1"));
+        TokenManager tokenManager = new TokenManager(rest, config, mapper);
+        tokenManager.authenticateWithOtp("123456");
+        FakeWebSocketTransport webSocket = new FakeWebSocketTransport();
+
+        try (StreamingService streaming = service(tokenManager, webSocket, config)) {
+            streaming.connectWithOtp("ignored");
+            streaming.subscribeOrderStatus("1234567");
+            streaming.subscribePortfolio();
+
+            assertTrue(streaming.activeSubscriptions().stream().anyMatch(
+                    subscription -> subscription.channel() == io.github.phanducquang.ssi.streaming.enums.StreamingChannel.TRADING
+                            && subscription.topic().equals("order.1234567")));
+            assertTrue(streaming.activeSubscriptions().stream().anyMatch(
+                    subscription -> subscription.channel() == io.github.phanducquang.ssi.streaming.enums.StreamingChannel.TRADING
+                            && subscription.topic().equals("portfolio.*")));
+
+            webSocket.triggerUnexpectedClose();
+            await(() -> webSocket.connectCount >= 2 && webSocket.sent.size() >= 3, Duration.ofSeconds(1));
+
+            StreamingRequest replay = (StreamingRequest) webSocket.sent.get(2);
+            assertEquals(io.github.phanducquang.ssi.streaming.enums.StreamingChannel.TRADING, replay.channel());
+            assertEquals(List.of("order.1234567", "portfolio.*"), replay.topics());
+        }
+    }
+
+    @Test
     void unsubscribeRemovesTopicFromReconnectRegistry() throws Exception {
         SsiConfig config = config();
         FakeRestTransport rest = new FakeRestTransport();
