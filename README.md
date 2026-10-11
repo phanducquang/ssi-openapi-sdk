@@ -56,6 +56,16 @@ try (SsiClient client = SsiClient.create(config)) {
 }
 ```
 
+## Quote parsing
+
+`QuoteMessage.bidsPresent()` and `asksPresent()` distinguish an omitted side from an explicitly empty side. An omitted field has `present=false` and an empty list; `[]` has `present=true` and an empty list. Explicit `null` and non-array sides are invalid.
+
+Each Quote level must contain exactly `[price, quantity]`. Prices are finite, non-negative `Double` values, including zero. Quantities are non-negative `long` values parsed with `BigDecimal.longValueExact()`: fractional values and overflow are rejected, while integral decimals such as `1.0` are accepted. JSON numbers and valid decimal strings are supported. Levels retain the received Top order, and both side lists are immutable.
+
+Any invalid side, tuple or number rejects the entire Quote. The dispatcher logs the topic and failing field, skips `onQuote`, and continues processing subsequent messages. The raw callback still receives syntactically valid JSON before Quote validation.
+
+The four-argument `QuoteMessage` constructor remains available and infers side presence from non-null lists. `PriceLevel.price()` now returns `Double`, including price levels in `OddLotMessage`; consumers previously using `BigDecimal` for these levels must update their code.
+
 ## Smart OTP: SDK handles request + poll + token
 
 ```java
