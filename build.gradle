@@ -38,8 +38,19 @@ tasks.named('test') {
 
 publishing {
     publications {
-        mavenJava(MavenPublication) {
+        maven(MavenPublication) {
             from components.java
+        }
+    }
+    repositories {
+        maven {
+            name = 'nexus'
+            url = "${nexusUrl}/maven-releases/"
+            credentials {
+                username = project.nexusUsername
+                password = project.nexusPassword
+            }
+            allowInsecureProtocol = true
         }
     }
 }
