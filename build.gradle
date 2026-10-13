@@ -36,21 +36,28 @@ tasks.named('test') {
     }
 }
 
+def nexusUrlValue = findProperty('nexusUrl') ?: System.getenv('NEXUS_URL')
+def nexusUsernameValue = findProperty('nexusUsername') ?: System.getenv('NEXUS_USERNAME')
+def nexusPasswordValue = findProperty('nexusPassword') ?: System.getenv('NEXUS_PASSWORD')
+
 publishing {
     publications {
         maven(MavenPublication) {
             from components.java
         }
     }
-    repositories {
-        maven {
-            name = 'nexus'
-            url = "${nexusUrl}/maven-releases/"
-            credentials {
-                username = project.nexusUsername
-                password = project.nexusPassword
+
+    if (nexusUrlValue) {
+        repositories {
+            maven {
+                name = 'nexus'
+                url = "${nexusUrlValue}/maven-releases/"
+                credentials {
+                    username = nexusUsernameValue
+                    password = nexusPasswordValue
+                }
+                allowInsecureProtocol = true
             }
-            allowInsecureProtocol = true
         }
     }
 }
