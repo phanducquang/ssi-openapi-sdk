@@ -6,6 +6,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import vn.ssi.openapi.streaming.model.*;
+import vn.ssi.openapi.trading.enums.OrderSide;
+import vn.ssi.openapi.trading.enums.OrderStatus;
+import vn.ssi.openapi.trading.enums.OrderType;
+import vn.ssi.openapi.trading.fco.FcoStatus;
+import vn.ssi.openapi.trading.fco.FcoType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,6 +33,9 @@ public final class StreamingMessageDispatcher {
     private final List<Consumer<PutMessage>> putListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<OddLotMessage>> oddLotListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<HeartbeatMessage>> heartbeatListeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<OrderStatusMessage>> orderStatusListeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<PortfolioMessage>> portfolioListeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<FcoOrderUpdateMessage>> fcoOrderUpdateListeners = new CopyOnWriteArrayList<>();
 
     public StreamingMessageDispatcher(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
@@ -46,9 +54,21 @@ public final class StreamingMessageDispatcher {
             notifyListeners(heartbeatListeners, new HeartbeatMessage(message.path("method").asText(""), channel, message.path("status").asText(""), message.path("message").asText("")), "heartbeat");
             return;
         }
-        if (!"DATA".equals(channel)) return;
         String topic = message.path("topic").asText("");
         JsonNode data = message.path("data");
+        if ("TRADING".equals(channel)) {
+            if (topic.startsWith("order.")) {
+                if ("fcoEvent".equals(data.path("eventType").asText(""))) {
+                    notifyListeners(fcoOrderUpdateListeners, parseFcoOrderUpdate(data), "fco-order-update");
+                } else {
+                    notifyListeners(orderStatusListeners, parseOrderStatus(data), "order-status");
+                }
+            } else if (topic.startsWith("portfolio.")) {
+                notifyListeners(portfolioListeners, parsePortfolio(data), "portfolio");
+            }
+            return;
+        }
+        if (!"DATA".equals(channel)) return;
         if (topic.startsWith("trade.")) {
             if (topic.contains("@")) notifyListeners(intervalListeners, parseInterval(data), "interval");
             else notifyListeners(tradeListeners, parseTrade(data), "trade");
@@ -78,6 +98,9 @@ public final class StreamingMessageDispatcher {
     public StreamingMessageDispatcher onPutThrough(Consumer<PutMessage> listener) { putListeners.add(listener); return this; }
     public StreamingMessageDispatcher onOddLot(Consumer<OddLotMessage> listener) { oddLotListeners.add(listener); return this; }
     public StreamingMessageDispatcher onHeartbeat(Consumer<HeartbeatMessage> listener) { heartbeatListeners.add(listener); return this; }
+    public StreamingMessageDispatcher onOrderStatus(Consumer<OrderStatusMessage> listener) { orderStatusListeners.add(listener); return this; }
+    public StreamingMessageDispatcher onPortfolio(Consumer<PortfolioMessage> listener) { portfolioListeners.add(listener); return this; }
+    public StreamingMessageDispatcher onFcoOrderUpdate(Consumer<FcoOrderUpdateMessage> listener) { fcoOrderUpdateListeners.add(listener); return this; }
 
     private TradeMessage parseTrade(JsonNode d) {
         return new TradeMessage(
@@ -103,6 +126,32 @@ public final class StreamingMessageDispatcher {
     private MarketStatusMessage parseMarket(JsonNode d) { return new MarketStatusMessage(text(d,"market"), text(d,"status"), text(d,"tradingDate")); }
     private PutMessage parsePut(JsonNode d) { return new PutMessage(text(d,"t"), text(d,"s"), text(d,"p"), text(d,"q"), text(d,"tq"), text(d,"tv")); }
     private OddLotMessage parseOddLot(JsonNode d) { return new OddLotMessage(text(d,"t"), text(d,"s"), decimal(d,"p"), longValue(d,"q"), levels(d.path("bids")), levels(d.path("asks"))); }
+
+    private OrderStatusMessage parseOrderStatus(JsonNode data) {
+        return new OrderStatusMessage(
+                text(data, "accountNo"), text(data, "clientRequestId"), text(data, "orderId"),
+                text(data, "symbol"), OrderSide.fromValue(text(data, "side")),
+                OrderType.fromValue(text(data, "orderType")), priceValue(data.path("price")),
+                longValue(data, "quantity"), longValue(data, "osQty"),
+                longValue(data, "filledQty"), longValue(data, "cancelQty"),
+                OrderStatus.fromValue(text(data, "orderStatus")),
+                text(data, "inputTime"), text(data, "modifyTime"), text(data, "rejectReason"));
+    }
+
+    private PortfolioMessage parsePortfolio(JsonNode data) {
+        return new PortfolioMessage(text(data, "accountNo"), doubleValue(data, "totalAsset"),
+                doubleValue(data, "cashBalance"), doubleValue(data, "stockValue"));
+    }
+
+    private FcoOrderUpdateMessage parseFcoOrderUpdate(JsonNode data) {
+        return new FcoOrderUpdateMessage(
+                text(data, "fcoId"), FcoStatus.fromValue(text(data, "processStatus")),
+                longValue(data, "matchedQuantity"), data.path("isPlaceOrder").asBoolean(false),
+                text(data, "symbol"), longValue(data, "quantity"), text(data, "price"),
+                text(data, "accountNo"), text(data, "updatedTime"), text(data, "status"),
+                text(data, "message"), text(data, "username"), text(data, "eventType"),
+                FcoType.fromValue(text(data, "type")));
+    }
 
     private List<PriceLevel> quoteLevels(JsonNode data, String side) {
         JsonNode node = data.get(side);
@@ -156,5 +205,30 @@ public final class StreamingMessageDispatcher {
     private long longValue(JsonNode n) { if (n == null || n.isNull()) return 0L; if (n.isNumber()) return n.longValue(); try { return new BigDecimal(n.asText("0")).longValue(); } catch (NumberFormatException e) { return 0L; } }
     private BigDecimal decimal(JsonNode d, String f) { return decimal(d.path(f)); }
     private BigDecimal decimal(JsonNode n) { if (n == null || n.isNull()) return BigDecimal.ZERO; if (n.isNumber()) return n.decimalValue(); try { return new BigDecimal(n.asText("0")); } catch (NumberFormatException e) { return BigDecimal.ZERO; } }
+    private double doubleValue(JsonNode data, String field) {
+        JsonNode node = data.path(field);
+        if (node.isNumber()) return node.asDouble();
+        try { return Double.parseDouble(node.asText("0")); }
+        catch (NumberFormatException ignored) { return 0.0d; }
+    }
+
+    private Object priceValue(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) return 0L;
+        if (node.isIntegralNumber()) return node.longValue();
+        if (node.isFloatingPointNumber()) {
+            double value = node.doubleValue();
+            if (value == Math.rint(value)) return (long) value;
+            return value;
+        }
+        try {
+            BigDecimal value = new BigDecimal(node.asText(""));
+            if (value.stripTrailingZeros().scale() <= 0) return value.longValue();
+            return value.doubleValue();
+        } catch (NumberFormatException e) {
+            OrderSide side = OrderSide.fromValue(node.asText(""));
+            return side == null ? 0L : side;
+        }
+    }
+
     private <T> void notifyListeners(List<Consumer<T>> listeners, T message, String type) { for (Consumer<T> listener : listeners) try { listener.accept(message); } catch (RuntimeException e) { log.error("SSI {} callback failed", type, e); } }
 }

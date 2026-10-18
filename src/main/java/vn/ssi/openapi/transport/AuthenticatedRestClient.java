@@ -1,0 +1,54 @@
+package vn.ssi.openapi.transport;
+
+import vn.ssi.openapi.auth.TokenManager;
+import vn.ssi.openapi.exception.AuthenticationException;
+
+import java.util.Map;
+import java.util.Objects;
+
+public final class AuthenticatedRestClient implements RestTransport {
+    private final RestTransport delegate;
+    private final TokenManager tokenManager;
+
+    public AuthenticatedRestClient(RestTransport delegate, TokenManager tokenManager) {
+        this.delegate = Objects.requireNonNull(delegate, "delegate");
+        this.tokenManager = Objects.requireNonNull(tokenManager, "tokenManager");
+    }
+
+    @Override
+    public RestClient.ApiResponse post(String path, Object body) {
+        return request("POST", path, Map.of(), body, Map.of());
+    }
+
+    @Override
+    public RestClient.ApiResponse request(
+            String method,
+            String path,
+            Map<String, ?> queryParams,
+            Object body,
+            Map<String, String> headers) {
+        delegate.setAccessToken(tokenManager.ensureAuthenticated());
+
+        try {
+            return delegate.request(method, path, queryParams, body, headers);
+        } catch (AuthenticationException firstFailure) {
+            try {
+                delegate.setAccessToken(tokenManager.refresh().accessToken());
+            } catch (AuthenticationException refreshFailure) {
+                firstFailure.addSuppressed(refreshFailure);
+                throw firstFailure;
+            }
+            return delegate.request(method, path, queryParams, body, headers);
+        }
+    }
+
+    @Override
+    public void setAccessToken(String token) {
+        delegate.setAccessToken(token);
+    }
+
+    @Override
+    public void close() {
+        // The underlying transport is owned and closed by SsiClient.
+    }
+}
