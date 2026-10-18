@@ -56,6 +56,16 @@ try (SsiClient client = SsiClient.create(config)) {
 }
 ```
 
+## Quote parsing
+
+`QuoteMessage.bidsPresent()` and `asksPresent()` distinguish an omitted side from an explicitly empty side. An omitted field has `present=false` and an empty list; `[]` has `present=true` and an empty list. Explicit `null` and non-array sides are invalid.
+
+Each Quote level must contain exactly `[price, quantity]`. Prices are finite, non-negative `Double` values, including zero. Quantities are non-negative `long` values parsed with `BigDecimal.longValueExact()`: fractional values and overflow are rejected, while integral decimals such as `1.0` are accepted. JSON numbers and valid decimal strings are supported. Levels retain the received Top order, and both side lists are immutable.
+
+Any invalid side, tuple or number rejects the entire Quote. The dispatcher logs the topic and failing field, skips `onQuote`, and continues processing subsequent messages. The raw callback still receives syntactically valid JSON before Quote validation.
+
+The four-argument `QuoteMessage` constructor remains available and infers side presence from non-null lists. `PriceLevel.price()` now returns `Double`, including price levels in `OddLotMessage`; consumers previously using `BigDecimal` for these levels must update their code.
+
 ## Smart OTP: SDK handles request + poll + token
 
 ```java
@@ -198,7 +208,7 @@ Bulk `/api/v3/data/ohlc/download` remains intentionally unimplemented because th
 
 ## Next milestones
 
-1. Live integration validation against SSI with real credentials: auth, market-data REST, DATA/TRADING streaming and reconnect.
-2. Controlled trading-account validation for RSA-signed place/modify/cancel and FCO payloads; never run these mutations in public CI.
-3. Review any protocol differences discovered by live testing and add recorded fixture tests.
-4. Publishing/release automation and versioned Java artifacts.
+1. Validate existing Auth / DATA / TRADING streams against SSI with real credentials.
+2. Validate REST, Core Trading and FCO via a controlled test account.
+3. Harden token refresh and reconnect reliability in a separately reviewed change.
+4. Release and publish versioned SDK artifacts.
