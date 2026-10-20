@@ -169,6 +169,57 @@ class StreamingServiceReconnectTest {
         }
     }
 
+    @Test
+    void indexTopicsAreNormalizedTrackedUnsubscribedAndReplayed() throws Exception {
+        SsiConfig config = config();
+        FakeRestTransport rest = new FakeRestTransport();
+        rest.enqueue(200, tokenResponse("access-1", Instant.now().getEpochSecond() + 3600, "refresh-1"));
+        TokenManager tokenManager = new TokenManager(rest, config, mapper);
+        tokenManager.authenticateWithOtp("123456");
+        FakeWebSocketTransport webSocket = new FakeWebSocketTransport();
+
+        try (StreamingService streaming = service(tokenManager, webSocket, config)) {
+            streaming.connectWithOtp("ignored");
+            streaming.subscribeIndexTrade("vn30", "VN30", "HNXINDEX");
+            streaming.subscribeIndexSummary("vn30");
+            assertEquals(List.of("trade.index.VN30", "trade.index.HNXINDEX"),
+                    ((StreamingRequest) webSocket.sent.get(0)).topics());
+            assertEquals(List.of("indexsummary.VN30"),
+                    ((StreamingRequest) webSocket.sent.get(1)).topics());
+
+            streaming.unsubscribeIndexTrade("HNXINDEX");
+            assertEquals(2, streaming.activeSubscriptions().size());
+            assertTrue(streaming.activeSubscriptions().stream()
+                    .anyMatch(s -> s.topic().equals("trade.index.VN30")));
+
+            webSocket.triggerUnexpectedClose();
+            await(() -> webSocket.connectCount >= 2 && webSocket.sent.size() >= 4, Duration.ofSeconds(1));
+            StreamingRequest replay = (StreamingRequest) webSocket.sent.get(3);
+            assertEquals(List.of("indexsummary.VN30", "trade.index.VN30"), replay.topics());
+            assertEquals(vn.ssi.openapi.streaming.enums.StreamingChannel.DATA, replay.channel());
+        }
+    }
+
+    @Test
+    void invalidIndexCodesCannotBeSentAsTopics() throws Exception {
+        SsiConfig config = config();
+        FakeRestTransport rest = new FakeRestTransport();
+        rest.enqueue(200, tokenResponse("access-1", Instant.now().getEpochSecond() + 3600, "refresh-1"));
+        TokenManager tokenManager = new TokenManager(rest, config, mapper);
+        tokenManager.authenticateWithOtp("123456");
+        FakeWebSocketTransport webSocket = new FakeWebSocketTransport();
+
+        try (StreamingService streaming = service(tokenManager, webSocket, config)) {
+            streaming.connectWithOtp("ignored");
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> streaming.subscribeIndexTrade("VN30,FPT"));
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> streaming.subscribeIndexSummary("*"));
+            assertTrue(webSocket.sent.isEmpty());
+            assertTrue(streaming.activeSubscriptions().isEmpty());
+        }
+    }
+
     private StreamingService service(TokenManager tokenManager, WebSocketTransport webSocket, SsiConfig config) { return new StreamingService(tokenManager, webSocket, new StreamingMessageDispatcher(mapper), config); }
     private SsiConfig config() { return SsiConfig.builder().apiKey("key").apiSecret("secret").retryDelay(Duration.ofMillis(1)).maxRetries(3).build(); }
     private String tokenResponse(String accessToken, long expiresAt, String refreshToken) { return "{\"data\":{\"accessToken\":\"" + accessToken + "\",\"tokenType\":\"Bearer\",\"expiresAt\":" + expiresAt + ",\"refreshToken\":\"" + refreshToken + "\"}}"; }
