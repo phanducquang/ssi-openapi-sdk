@@ -206,6 +206,54 @@ Implemented REST groups:
 
 Bulk `/api/v3/data/ohlc/download` remains intentionally unimplemented because the upstream Python SDK also leaves it unimplemented.
 
+## SSI FastConnect v3.3.1 additions
+
+This update adds only the three API features announced in SSI FastConnect v3.3.1.
+Existing authentication, reconnect logic, stock trade/quote parsing, trading and FCO remain unchanged.
+
+### Index-value streaming
+
+`subscribeIndexTrade` subscribes to the **index value** (`trade.index.VN30`), not stock trades
+from its constituents (`trade.VN30`). Index ticks are delivered as `IndexTickMessage`
+with nullable `BigDecimal` numeric values and a `raw()` JSON payload for additional fields.
+
+```java
+client.streaming()
+        .onIndexTick(tick -> System.out.println(tick.symbol() + ": " + tick.value()))
+        .onIndexSummary(summary -> System.out.println(summary.index() + ": " + summary.raw()));
+
+client.streaming().subscribeIndexTrade("VN30", "HNXINDEX");
+client.streaming().subscribeIndexSummary("VN30");
+// ... later:
+client.streaming().unsubscribeIndexTrade("HNXINDEX");
+client.streaming().unsubscribeIndexSummary("VN30");
+```
+
+`indexsummary.<CODE>` requires the `stream:DATA:indexsummary` permission granted by SSI.
+The published index-summary field schema is not yet fixed in the upstream Python SDK;
+the full event payload is therefore available via `IndexSummaryMessage.raw()`.
+Both new topics use the existing reconnect subscription registry and replay behavior.
+These unit tests do not verify live SSI entitlement or server delivery.
+
+### Corporate Actions REST
+
+```java
+// All pages; up to a 5-day date window, Vietnamese titles by default
+var events = client.marketData().getCorporateActions("VNM", "2026/10/15", "2026/10/20");
+
+// Explicit page/language (vn or en), with page size 10, 20, 50 or 100
+var page = client.marketData().getCorporateActionsPage(
+        null, "2026/10/15", "2026/10/20", "en", 1, 20);
+System.out.println(page.pagesCount());
+```
+
+The API is `GET /api/v3/data/corporateActions`. `symbol` is optional. Blank dates and `ratio`
+are preserved as returned by SSI for events that have not received an ex-right date.
+Date ranges and pagination constraints are validated before making the HTTP call.
+
+Documentation: https://developers.ssi.com.vn/docs/api-reference/release-notes
+and https://developers.ssi.com.vn/docs/api-reference/data-corporateActions.
+
 ## Next milestones
 
 1. Live integration validation against SSI with real credentials: auth, market-data REST, DATA/TRADING streaming and reconnect.
