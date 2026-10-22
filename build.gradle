@@ -3,8 +3,8 @@ plugins {
     id 'maven-publish'
 }
 
-group = 'io.github.phanducquang'
-version = '0.1.0-SNAPSHOT'
+group = 'vn.ssi.openapi'
+version = "${libVersion}"
 
 java {
     toolchain {
@@ -14,8 +14,23 @@ java {
     withJavadocJar()
 }
 
+def nexusUrlValue = findProperty('nexusUrl') ?: System.getenv('NEXUS_URL')
+def nexusUsernameValue = findProperty('nexusUsername') ?: System.getenv('NEXUS_USERNAME')
+def nexusPasswordValue = findProperty('nexusPassword') ?: System.getenv('NEXUS_PASSWORD')
+
 repositories {
-    mavenCentral()
+    if (nexusUrlValue) {
+        maven {
+            url "${nexusUrlValue}/maven-group/"
+            credentials {
+                username = nexusUsernameValue
+                password = nexusPasswordValue
+            }
+            allowInsecureProtocol = true
+        }
+    } else {
+        mavenCentral()
+    }
 }
 
 dependencies {
@@ -35,10 +50,6 @@ tasks.named('test') {
         showStandardStreams = true
     }
 }
-
-def nexusUrlValue = findProperty('nexusUrl') ?: System.getenv('NEXUS_URL')
-def nexusUsernameValue = findProperty('nexusUsername') ?: System.getenv('NEXUS_USERNAME')
-def nexusPasswordValue = findProperty('nexusPassword') ?: System.getenv('NEXUS_PASSWORD')
 
 publishing {
     publications {

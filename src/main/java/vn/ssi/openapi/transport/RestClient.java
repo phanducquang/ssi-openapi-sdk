@@ -216,15 +216,7 @@ public final class RestClient implements RestTransport {
     }
 
     private Double parseRetryAfter(HttpHeaders headers) {
-        return headers.firstValue("Retry-After")
-                .map(value -> {
-                    try {
-                        return Double.parseDouble(value);
-                    } catch (NumberFormatException ignored) {
-                        return null;
-                    }
-                })
-                .orElse(null);
+        return RetryAfter.seconds(headers, java.time.Instant.now());
     }
 
     private void sleepBackoff(int attempt) {

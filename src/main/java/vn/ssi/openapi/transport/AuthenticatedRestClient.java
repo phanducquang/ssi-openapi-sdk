@@ -27,13 +27,13 @@ public final class AuthenticatedRestClient implements RestTransport {
             Map<String, ?> queryParams,
             Object body,
             Map<String, String> headers) {
-        tokenManager.ensureAuthenticated();
+        String requestToken = tokenManager.ensureAuthenticated();
 
         try {
             return delegate.request(method, path, queryParams, body, headers);
         } catch (AuthenticationException firstFailure) {
             try {
-                tokenManager.refresh();
+                tokenManager.refreshAfterRejection(requestToken);
             } catch (AuthenticationException refreshFailure) {
                 firstFailure.addSuppressed(refreshFailure);
                 throw firstFailure;

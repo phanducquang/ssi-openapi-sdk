@@ -14,7 +14,7 @@ The SDK owns the access-token lifecycle. Application code supplies SSI credentia
 - Trade, quote, foreign room, market status, put-through, odd lot and OHLCV subscriptions.
 - Subscription registry + automatic replay after reconnect.
 - Automatic reconnect with exponential backoff.
-- Reconnect never starts a new OTP flow automatically. If neither the access token nor refresh token can be used, state becomes `AUTH_REQUIRED`.
+- Reconnect defaults to refresh-only authentication. Optional API-credential recovery is available for non-interactive market-data accounts; OTP flows are never started implicitly.
 - Manual disconnect never triggers reconnect.
 - Connection lifecycle callbacks and connection diagnostics.
 - Heartbeat survives transient disconnects and resumes after reconnect.
@@ -34,7 +34,7 @@ SsiConfig config = SsiConfig.builder()
 SsiClient client = SsiClient.create(config);
 ```
 
-`autoReconnect` defaults to `true`. Reconnect uses `maxRetries` and `retryDelay` with exponential backoff.
+`autoReconnect` defaults to `true`. Unless a runtime policy is supplied, its reconnect budget/delay derive from `maxRetries` and `retryDelay`, with backoff capped at 60 seconds (or the initial delay if larger). REST and initial-connect retries still use `maxRetries`.
 
 Do not commit credentials, OTPs, refresh tokens or access tokens.
 
@@ -83,7 +83,33 @@ The user still approves the push notification on the SSI device. Polling is conf
 
 Every successful subscribe is stored in the SDK's in-memory subscription registry. Unexpected disconnects reuse a valid access token, refresh an expired token when possible, reconnect with exponential backoff, then replay active subscriptions. Calling `disconnect()` is intentional and never triggers reconnect.
 
-The reconnect path intentionally does **not** request a new OTP or Smart OTP. If neither access token nor refresh token can be used, the state becomes `AUTH_REQUIRED` and application interaction is required.
+The default `REFRESH_ONLY` policy never starts a new authentication or OTP flow. When tokens cannot be used, the state becomes `AUTH_REQUIRED`. Set `API_CREDENTIALS` explicitly for an account allowed to authenticate without OTP:
+
+```java
+SsiConfig config = SsiConfig.builder()
+        .apiKey(System.getenv("SSI_API_KEY"))
+        .apiSecret(System.getenv("SSI_API_SECRET"))
+        .reconnectAuthenticationPolicy(ReconnectAuthenticationPolicy.API_CREDENTIALS)
+        .reconnectPolicy(new ReconnectPolicy(10, Duration.ofSeconds(2), Duration.ofSeconds(60), 0.2))
+        .sendTimeout(Duration.ofSeconds(10))
+        .closeTimeout(Duration.ofSeconds(5))
+        .build();
+```
+
+Both policy types are in `vn.ssi.openapi.config`. `maxAttempts=-1` opts into unlimited runtime retries for transient errors; it does not retry rejected credentials or required user interaction indefinitely. The concrete JDK transport performs one connect per runtime attempt. Legacy custom transports inherit `connectOnce()` as a call to `connect()` and may retain their internal retry behavior until they override it.
+
+Expired/missing tokens and refresh 401/403 can fall back to API-credential authentication under `API_CREDENTIALS`. Refresh/authentication I/O failures, 5xx and rate limits use runtime backoff; valid Retry-After delays are honored. A newly authenticated token rejected by the handshake stops recovery rather than looping authentication. Malformed/expired replacement tokens and unexpected failures produce `FAILED` with diagnostics.
+
+API credentials may only grant market-data permissions. Trading subscriptions/REST calls requiring OTP should retain `REFRESH_ONLY` and resume after the required user authentication:
+
+```java
+client.auth().authenticateWithOtp(newOtp);  // obtain a fresh OTP outside the recovery callback
+client.streaming().resumeAfterAuthentication();
+```
+
+Resume uses an already-valid token, replays the tracked DATA/TRADING subscriptions and retains a running heartbeat scheduler. It never requests or reuses an OTP. Run authentication/resume from application work, not as blocking work inside transport callbacks. `disconnect()`/`close()` cancel pending recovery; a closed StreamingService cannot resume.
+
+`onConnected()` continues to mean transport open. `isReady()`/`onReady()` additionally require completion of subscription replay, and configured heartbeat freshness. Readiness reports successful local sends, not subscription ACKs or receipt of new market data. Track data timestamps/counters independently.
 
 ## Connection observability
 
@@ -103,9 +129,14 @@ client.streaming().connectionState();
 client.streaming().isConnected();
 client.streaming().activeSubscriptions();
 client.streaming().lastMessageAt();
+client.streaming().lastHeartbeatAt();
+client.streaming().isReady();
+client.streaming().diagnostics();
 ```
 
-Possible states: `DISCONNECTED`, `CONNECTING`, `CONNECTED`, `RECONNECTING`, `AUTH_REQUIRED`, `FAILED`.
+Possible states: `DISCONNECTED`, `CONNECTING`, `CONNECTED`, `RECONNECTING`, `AUTH_REQUIRED`, `FAILED`. Diagnostics provide attempt, stage/reason, HTTP status and token expiry/presence/validity metadata. They contain no token values, secrets, OTPs or raw authentication response bodies. Runtime authentication callbacks remain `Consumer<AuthenticationException>`; terminal recovery errors carry a `ReconnectAuthenticationException` with stage/reason.
+
+An exhausted finite runtime budget becomes `FAILED` / `RETRY_EXHAUSTED` and unblocks `awaitClose()`. `AUTH_REQUIRED` also unblocks it. Keep the SDK alive to allow explicit resume instead of closing it solely because `awaitClose()` returned. Use application policy to decide how terminal failures are handled.
 
 ## OHLCV
 
@@ -122,7 +153,23 @@ Intervals mirror the Python SDK: `1m`, `3m`, `5m`, `15m`, `1h`, `1d`, `1w`, `1M`
 client.streaming().startHeartbeat(Duration.ofSeconds(30));
 ```
 
-Heartbeat sends only while the socket is connected. A transient disconnect does not destroy the scheduler, so heartbeat resumes after a successful reconnect.
+Heartbeat sends only while connected and resumes after recovery. Send failures enter the same reconnect loop. Optional receive-timeout monitoring is disabled by default:
+
+```java
+SsiConfig config = SsiConfig.builder()
+        .apiKey(System.getenv("SSI_API_KEY"))
+        .apiSecret(System.getenv("SSI_API_SECRET"))
+        .heartbeatReceiveTimeout(Duration.ofSeconds(75))
+        // add any reconnect options
+        .build();
+SsiClient client = SsiClient.create(config);
+client.streaming().connect();
+client.streaming().startHeartbeat(Duration.ofSeconds(25));
+```
+
+The watchdog is active only while the heartbeat scheduler runs. A new connection receives a full timeout grace period. It monitors recognized heartbeat responses, not missing market ticks outside trading hours. The default validator recognizes `channel=HEARTBEAT`, `method=ping_pong`, `status=ok`, `message=pong`, as documented in the [SSI heartbeat response example](https://developers.ssi.com.vn/docs/api-reference/tradingws-heartbeat). This example is for the trading WebSocket API; confirm the response on your streaming endpoint before enabling the watchdog. Endpoints with a different verified format can supply `heartbeatResponseValidator(Predicate<HeartbeatMessage>)`. Every HEARTBEAT envelope is still delivered to user callbacks; invalid/error heartbeat envelopes do not reset the watchdog.
+
+JDK connect, send and close operations have deadlines. Send/close default to `timeout()` and have separate overrides. Disconnect releases its owned socket after a bounded close send. Session generations prevent old close/error/message events from changing the new session.
 
 ## Architecture
 
@@ -145,7 +192,7 @@ Transport owns the WebSocket connection. `StreamingService` owns reconnect orche
 
 ## Current validation status
 
-Unit tests cover Smart OTP polling, refresh-token reuse, reconnect without implicit OTP, unexpected disconnect -> reconnect -> subscription replay, manual disconnect -> no reconnect, subscribe/unsubscribe registry behavior, request serialization and typed trade/quote dispatch.
+Unit tests cover the existing API/OTP behaviors plus expired-token credential recovery, rejected/temporary refresh failures, handshake recovery limits, terminal diagnostics, DATA/TRADING replay and readiness, manual resume, concurrent token resolution, finite/unlimited runtime retry, Retry-After, heartbeat validation/timeouts, bounded JDK transport I/O, cancellation and stale session callbacks.
 
 Live SSI authentication and WebSocket integration still requires real SSI credentials and OTP/Smart OTP approval and is not performed by automated tests.
 

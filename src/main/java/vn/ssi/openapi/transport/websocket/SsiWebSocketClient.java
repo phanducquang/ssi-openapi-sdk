@@ -3,6 +3,7 @@ package vn.ssi.openapi.transport.websocket;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import vn.ssi.openapi.config.SsiConfig;
+import vn.ssi.openapi.transport.RetryAfter;
 import vn.ssi.openapi.exception.AuthenticationException;
 import vn.ssi.openapi.exception.RateLimitException;
 import vn.ssi.openapi.exception.WebSocketException;
@@ -15,149 +16,285 @@ import java.net.http.WebSocketHandshakeException;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.CompletionStage;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
+/** JDK transport with bounded I/O and generation-scoped callbacks. */
 public final class SsiWebSocketClient implements WebSocketTransport {
     private static final Logger log = LoggerFactory.getLogger(SsiWebSocketClient.class);
     private final SsiConfig config;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final Object sessionLock = new Object();
+    private final ReentrantLock connectLock = new ReentrantLock();
     private volatile WebSocket webSocket;
     private volatile ConnectionState state = ConnectionState.DISCONNECTED;
     private volatile Consumer<String> messageHandler = ignored -> {};
     private volatile WebSocketLifecycleListener lifecycleListener = new WebSocketLifecycleListener() {};
     private volatile CountDownLatch closeLatch = new CountDownLatch(0);
+    private long generation;
+    private volatile boolean manuallyDisconnected = true;
+    private CompletableFuture<WebSocket> pendingConnect;
 
     public SsiWebSocketClient(SsiConfig config, ObjectMapper objectMapper) {
+        this(config, objectMapper, HttpClient.newBuilder().connectTimeout(config.timeout()).build());
+    }
+
+    SsiWebSocketClient(SsiConfig config, ObjectMapper objectMapper, HttpClient httpClient) {
         this.config = Objects.requireNonNull(config);
         this.objectMapper = Objects.requireNonNull(objectMapper);
-        this.httpClient = HttpClient.newBuilder().connectTimeout(config.timeout()).build();
+        this.httpClient = Objects.requireNonNull(httpClient);
     }
 
-    @Override
-    public synchronized void connect(String accessToken) {
-        if (state == ConnectionState.CONNECTED) return;
+    @Override public void connect(String accessToken) { connect(accessToken, config.maxRetries()); }
+    @Override public void connectOnce(String accessToken) { connect(accessToken, 1); }
+
+    private void connect(String accessToken, int attempts) {
         if (accessToken == null || accessToken.isBlank()) throw new AuthenticationException("A valid SSI access token is required before WebSocket connect");
-        RuntimeException lastFailure = null;
-        for (int attempt = 0; attempt < config.maxRetries(); attempt++) {
+        try { connectLock.lockInterruptibly(); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new WebSocketException("SSI connect interrupted", e); }
+        try {
+            if (isConnected()) return;
+            RuntimeException lastFailure = null;
+            for (int attempt = 0; attempt < attempts; attempt++) {
+                try { connectAttempt(accessToken); return; }
+                catch (RuntimeException failure) {
+                    lastFailure = failure;
+                    if (failure instanceof AuthenticationException || failure instanceof RateLimitException
+                            || failure instanceof CancellationException || Thread.currentThread().isInterrupted()) throw failure;
+                    if (attempt < attempts - 1) sleepBackoff(attempt);
+                }
+            }
+            throw lastFailure;
+        } finally { connectLock.unlock(); }
+    }
+
+    private void connectAttempt(String accessToken) {
+        final long session;
+        synchronized (sessionLock) {
+            session = ++generation;
+            manuallyDisconnected = false;
             state = ConnectionState.CONNECTING;
             closeLatch = new CountDownLatch(1);
-            try {
-                this.webSocket = httpClient.newWebSocketBuilder().connectTimeout(config.timeout()).header("Content-Type", "application/json").header("Accept", "application/json").header("Authorization", "Bearer " + accessToken).buildAsync(config.streamingUrl(), new Listener()).join();
-                state = ConnectionState.CONNECTED;
-                log.info("Connected to SSI WebSocket {}", config.streamingUrl());
-                return;
-            } catch (CompletionException e) {
-                lastFailure = mapConnectFailure(e.getCause() == null ? e : e.getCause());
+        }
+        final CompletableFuture<WebSocket> future;
+        try {
+            future = httpClient.newWebSocketBuilder().connectTimeout(config.timeout())
+                    .header("Content-Type", "application/json").header("Accept", "application/json")
+                    .header("Authorization", "Bearer " + accessToken)
+                    .buildAsync(config.streamingUrl(), new Listener(session));
+        } catch (RuntimeException failure) {
+            synchronized (sessionLock) {
+                if (generation == session) { ++generation; state = ConnectionState.FAILED; closeLatch.countDown(); }
+            }
+            throw failure;
+        }
+        synchronized (sessionLock) {
+            if (generation != session) {
+                cancelConnect(future);
+                throw supersededConnect();
+            }
+            pendingConnect = future;
+        }
+        try {
+            WebSocket socket = future.get(config.timeout().toMillis(), TimeUnit.MILLISECONDS);
+            synchronized (sessionLock) {
+                if (generation != session || state != ConnectionState.CONNECTED) {
+                    socket.abort();
+                    throw supersededConnect();
+                }
+                webSocket = socket;
+                pendingConnect = null;
+            }
+            log.info("Connected to SSI WebSocket");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            discardSession(session, future);
+            throw new WebSocketException("SSI connect interrupted", e);
+        } catch (ExecutionException | TimeoutException e) {
+            discardSession(session, future);
+            throw mapConnectFailure(e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e);
+        } catch (RuntimeException e) {
+            discardSession(session, future);
+            throw e;
+        }
+    }
+
+    private void discardSession(long session, CompletableFuture<WebSocket> future) {
+        WebSocket socket = null;
+        synchronized (sessionLock) {
+            if (generation == session) {
+                ++generation;
+                socket = webSocket;
+                webSocket = null;
+                pendingConnect = null;
                 state = ConnectionState.FAILED;
-                if (lastFailure instanceof AuthenticationException || lastFailure instanceof RateLimitException) throw lastFailure;
-                if (attempt < config.maxRetries() - 1) sleepBackoff(attempt);
+                closeLatch.countDown();
             }
         }
-        throw lastFailure == null ? new WebSocketException("Failed to connect to SSI WebSocket") : lastFailure;
+        cancelConnect(future);
+        if (socket != null) socket.abort();
     }
 
-    @Override public void onMessage(Consumer<String> handler) { this.messageHandler = Objects.requireNonNull(handler); }
-    @Override public void onLifecycle(WebSocketLifecycleListener listener) { this.lifecycleListener = Objects.requireNonNull(listener); }
-
-    @Override
-    public void send(Object payload) {
-        WebSocket socket = webSocket;
-        if (socket == null || state != ConnectionState.CONNECTED) throw new WebSocketException("SSI WebSocket is not connected");
-        try { socket.sendText(objectMapper.writeValueAsString(payload), true).join(); }
-        catch (JsonProcessingException e) { throw new WebSocketException("Failed to serialize SSI WebSocket request", e); }
-        catch (CompletionException e) { throw new WebSocketException("Failed to send SSI WebSocket request", e.getCause() == null ? e : e.getCause()); }
+    private void cancelConnect(CompletableFuture<WebSocket> future) {
+        future.thenAccept(WebSocket::abort);
+        future.cancel(true);
     }
 
-    @Override
-    public synchronized void disconnect() {
-        WebSocket socket = webSocket;
-        webSocket = null;
-        if (socket != null) {
-            try { socket.sendClose(WebSocket.NORMAL_CLOSURE, "client closing").join(); }
-            catch (RuntimeException ignored) { socket.abort(); }
+    @Override public void onMessage(Consumer<String> handler) { messageHandler = Objects.requireNonNull(handler); }
+    @Override public void onLifecycle(WebSocketLifecycleListener listener) { lifecycleListener = Objects.requireNonNull(listener); }
+
+    @Override public void send(Object payload) {
+        final WebSocket socket;
+        final long session;
+        synchronized (sessionLock) {
+            socket = webSocket;
+            session = generation;
+            if (socket == null || state != ConnectionState.CONNECTED) throw new WebSocketException("SSI WebSocket is not connected");
         }
-        state = ConnectionState.DISCONNECTED;
-        closeLatch.countDown();
+        try {
+            socket.sendText(objectMapper.writeValueAsString(payload), true).get(config.sendTimeout().toMillis(), TimeUnit.MILLISECONDS);
+        } catch (JsonProcessingException e) {
+            throw new WebSocketException("Failed to serialize SSI WebSocket request", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            failSession(session, socket, e);
+            throw new WebSocketException("SSI WebSocket send interrupted", e);
+        } catch (ExecutionException | TimeoutException | RuntimeException e) {
+            Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
+            failSession(session, socket, cause);
+            throw new WebSocketException("Failed to send SSI WebSocket request", cause);
+        }
     }
 
-    @Override
-    public void awaitClose() {
+    @Override public void disconnect() {
+        final WebSocket socket;
+        final CompletableFuture<WebSocket> future;
+        synchronized (sessionLock) {
+            ++generation;
+            manuallyDisconnected = true;
+            socket = webSocket;
+            future = pendingConnect;
+            webSocket = null;
+            pendingConnect = null;
+            state = ConnectionState.DISCONNECTED;
+            closeLatch.countDown();
+        }
+        if (future != null) cancelConnect(future);
+        if (socket != null) {
+            try { socket.sendClose(WebSocket.NORMAL_CLOSURE, "client closing").get(config.closeTimeout().toMillis(), TimeUnit.MILLISECONDS); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); socket.abort(); }
+            catch (ExecutionException | TimeoutException | RuntimeException e) { socket.abort(); }
+            finally { socket.abort(); }
+        }
+    }
+
+    @Override public void awaitClose() {
         try { closeLatch.await(); }
-        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new WebSocketException("Interrupted while waiting for SSI WebSocket to close", e); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new WebSocketException("SSI awaitClose interrupted", e); }
     }
-
-    @Override
-    public boolean awaitClose(Duration timeout) {
+    @Override public boolean awaitClose(Duration timeout) {
         try { return closeLatch.await(timeout.toMillis(), TimeUnit.MILLISECONDS); }
-        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new WebSocketException("Interrupted while waiting for SSI WebSocket to close", e); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new WebSocketException("SSI awaitClose interrupted", e); }
     }
-
     @Override public boolean isConnected() { return state == ConnectionState.CONNECTED && webSocket != null; }
     @Override public ConnectionState state() { return state; }
     @Override public void close() { disconnect(); }
 
+    private RuntimeException supersededConnect() {
+        return manuallyDisconnected ? new CancellationException("SSI connect cancelled by disconnect")
+                : new WebSocketException("SSI connection ended during handshake");
+    }
+
     private RuntimeException mapConnectFailure(Throwable cause) {
         if (cause instanceof WebSocketHandshakeException handshake) {
             int status = handshake.getResponse().statusCode();
-            if (status == 401 || status == 403) return new AuthenticationException("SSI WebSocket authentication failed: HTTP " + status, status, null);
+            if (status == 401 || status == 403) return new AuthenticationException("SSI WebSocket authentication failed", status, null);
             if (status == 429) {
-                Double retryAfter = handshake.getResponse().headers().firstValue("Retry-After").map(v -> { try { return Double.parseDouble(v); } catch (NumberFormatException ignored) { return null; } }).orElse(null);
-                return new RateLimitException("SSI WebSocket rate limit exceeded", status, null, retryAfter);
+                Double retryAfter = RetryAfter.seconds(handshake.getResponse().headers(), java.time.Instant.now());
+                return new RateLimitException("SSI WebSocket rate limited", status, null, retryAfter);
             }
             return new WebSocketException("SSI WebSocket handshake failed: HTTP " + status, cause);
         }
-        if (cause instanceof TimeoutException) return new WebSocketException("Timed out connecting to SSI WebSocket", cause);
-        return new WebSocketException("Failed to connect to SSI WebSocket: " + cause.getMessage(), cause);
+        return new WebSocketException("SSI WebSocket connect failed", cause);
     }
 
     private void sleepBackoff(int attempt) {
-        long multiplier = 1L << Math.min(attempt, 20);
-        long millis = Math.max(0L, config.retryDelay().toMillis() * multiplier);
+        long base = config.retryDelay().toMillis();
+        long factor = 1L << Math.min(attempt, 20);
+        long millis = base > Long.MAX_VALUE / factor ? Long.MAX_VALUE : base * factor;
         try { Thread.sleep(millis); }
-        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new WebSocketException("Interrupted during WebSocket retry backoff", e); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new WebSocketException("SSI retry interrupted", e); }
+    }
+
+    private boolean current(long session) { synchronized (sessionLock) { return generation == session; } }
+
+    private void failSession(long session, WebSocket socket, Throwable cause) {
+        synchronized (sessionLock) {
+            if (generation != session) return;
+            ++generation;
+            state = ConnectionState.FAILED;
+            webSocket = null;
+            closeLatch.countDown();
+        }
+        socket.abort();
+        try { lifecycleListener.onError(cause); }
+        catch (RuntimeException e) { log.warn("SSI transport error callback failed: type={}", e.getClass().getSimpleName()); }
     }
 
     private final class Listener implements WebSocket.Listener {
+        private final long session;
         private final StringBuilder textBuffer = new StringBuilder();
-        @Override public void onOpen(WebSocket webSocket) {
-            state = ConnectionState.CONNECTED;
-            try { lifecycleListener.onConnected(); } catch (RuntimeException e) { log.error("SSI WebSocket connected callback failed", e); }
-            webSocket.request(1);
+        private Listener(long session) { this.session = session; }
+        @Override public void onOpen(WebSocket socket) {
+            synchronized (sessionLock) {
+                if (generation != session) { socket.abort(); return; }
+                webSocket = socket;
+                state = ConnectionState.CONNECTED;
+            }
+            try { lifecycleListener.onConnected(); }
+            catch (RuntimeException e) { log.warn("SSI connected callback failed: type={}", e.getClass().getSimpleName()); }
+            socket.request(1);
         }
-        @Override public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
+        @Override public CompletionStage<?> onText(WebSocket socket, CharSequence data, boolean last) {
+            if (!current(session)) return CompletableFuture.completedFuture(null);
             synchronized (textBuffer) {
                 textBuffer.append(data);
                 if (last) {
                     String message = textBuffer.toString();
                     textBuffer.setLength(0);
-                    try { messageHandler.accept(message); } catch (RuntimeException e) { log.error("Unhandled SSI streaming message callback error", e); }
+                    if (current(session)) {
+                        try { messageHandler.accept(message); }
+                        catch (RuntimeException e) { log.warn("SSI message callback failed: type={}", e.getClass().getSimpleName()); }
+                    }
                 }
             }
-            webSocket.request(1);
+            socket.request(1);
             return CompletableFuture.completedFuture(null);
         }
-        @Override public CompletionStage<?> onPing(WebSocket webSocket, ByteBuffer message) { webSocket.request(1); return WebSocket.Listener.super.onPing(webSocket, message); }
-        @Override public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
-            state = ConnectionState.DISCONNECTED;
-            SsiWebSocketClient.this.webSocket = null;
-            closeLatch.countDown();
-            log.info("SSI WebSocket closed. code={}, reason={}", statusCode, reason);
-            try { lifecycleListener.onDisconnected(statusCode, reason); } catch (RuntimeException e) { log.error("SSI WebSocket disconnected callback failed", e); }
+        @Override public CompletionStage<?> onPing(WebSocket socket, ByteBuffer message) {
+            if (!current(session)) return CompletableFuture.completedFuture(null);
+            socket.request(1);
+            return socket.sendPong(message);
+        }
+        @Override public CompletionStage<?> onPong(WebSocket socket, ByteBuffer message) {
+            if (current(session)) socket.request(1);
             return CompletableFuture.completedFuture(null);
         }
-        @Override public void onError(WebSocket webSocket, Throwable error) {
-            state = ConnectionState.FAILED;
-            SsiWebSocketClient.this.webSocket = null;
-            closeLatch.countDown();
-            log.error("SSI WebSocket error", error);
-            try { lifecycleListener.onError(error); } catch (RuntimeException e) { log.error("SSI WebSocket error callback failed", e); }
+        @Override public CompletionStage<?> onClose(WebSocket socket, int statusCode, String reason) {
+            synchronized (sessionLock) {
+                if (generation != session) return CompletableFuture.completedFuture(null);
+                ++generation;
+                state = ConnectionState.DISCONNECTED;
+                webSocket = null;
+                closeLatch.countDown();
+            }
+            log.info("SSI WebSocket closed: code={}", statusCode);
+            try { lifecycleListener.onDisconnected(statusCode, reason); }
+            catch (RuntimeException e) { log.warn("SSI disconnected callback failed: type={}", e.getClass().getSimpleName()); }
+            return CompletableFuture.completedFuture(null);
         }
+        @Override public void onError(WebSocket socket, Throwable error) { failSession(session, socket, error); }
     }
 }

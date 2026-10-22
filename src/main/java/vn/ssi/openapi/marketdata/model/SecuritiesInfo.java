@@ -21,5 +21,6 @@ public record SecuritiesInfo(
         double iIndex,
         double iNav,
         double openInterest,
-        double settlementPrice) {
+        double settlementPrice,
+        String stockType) {
 }
