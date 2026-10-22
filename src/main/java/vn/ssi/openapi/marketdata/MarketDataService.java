@@ -468,7 +468,8 @@ public final class MarketDataService {
                     number(item, "iIndex"),
                     number(item, "iNav"),
                     number(item, "openInterest"),
-                    number(item, "settlementPrice")));
+                    number(item, "settlementPrice"),
+                    nullableText(item, "stockType")));
         }
         return List.copyOf(result);
     }
