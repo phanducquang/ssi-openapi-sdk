@@ -8,6 +8,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 import vn.ssi.openapi.auth.TokenManager;
 import vn.ssi.openapi.config.SsiConfig;
 import vn.ssi.openapi.exception.AuthenticationException;
+import vn.ssi.openapi.exception.ReconnectAuthenticationException;
+import vn.ssi.openapi.streaming.model.RecoveryReason;
+import vn.ssi.openapi.streaming.model.RecoveryStage;
 import vn.ssi.openapi.exception.SsiApiException;
 
 import java.net.http.HttpHeaders;
@@ -18,6 +21,8 @@ import java.util.Map;
 import java.util.Queue;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -83,7 +88,12 @@ class AuthenticatedRestClientTest {
 
         assertSame(firstFailure, assertThrows(AuthenticationException.class, this::sendOrder));
         assertEquals(1, firstFailure.getSuppressed().length);
-        assertSame(refreshFailure, firstFailure.getSuppressed()[0]);
+        ReconnectAuthenticationException classified = assertInstanceOf(
+                ReconnectAuthenticationException.class, firstFailure.getSuppressed()[0]);
+        assertEquals(RecoveryReason.REFRESH_REJECTED, classified.reason());
+        assertEquals(RecoveryStage.REFRESH, classified.stage());
+        assertEquals(refreshFailure.statusCode(), classified.statusCode());
+        assertNull(classified.responseBody());
         assertEquals(List.of(TokenManager.ACCESS_TOKEN_PATH, PATH, TokenManager.REFRESH_TOKEN_PATH),
                 transport.paths());
     }
