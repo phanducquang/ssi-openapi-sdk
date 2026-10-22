@@ -109,6 +109,16 @@ public final class StreamingService implements AutoCloseable {
         subscribeSymbol(Arrays.stream(boards).filter(Objects::nonNull).map(Board::value).toArray(String[]::new));
     }
     public void subscribeIndex(String... indices) { subscribeSymbol(indices); }
+
+    /** Subscribe to index-value ticks, not constituent stock trades. */
+    public void subscribeIndexTrade(String... indices) {
+        sendTracked(StreamingMethod.SUBSCRIBE, StreamingChannel.DATA, indexTopics("trade.index.", indices));
+    }
+
+    /** Requires the SSI scope stream:DATA:indexsummary. */
+    public void subscribeIndexSummary(String... indices) {
+        sendTracked(StreamingMethod.SUBSCRIBE, StreamingChannel.DATA, indexTopics("indexsummary.", indices));
+    }
     public void subscribeOrderStatus() { subscribeOrderStatus("*"); }
     public void subscribeOrderStatus(String accountNo) { sendTracked(StreamingMethod.SUBSCRIBE, StreamingChannel.TRADING, List.of(tradingTopic("order", accountNo))); }
     public void subscribePortfolio() { subscribePortfolio("*"); }
@@ -132,6 +142,14 @@ public final class StreamingService implements AutoCloseable {
         unsubscribeSymbol(Arrays.stream(boards).filter(Objects::nonNull).map(Board::value).toArray(String[]::new));
     }
     public void unsubscribeIndex(String... indices) { unsubscribeSymbol(indices); }
+
+    public void unsubscribeIndexTrade(String... indices) {
+        sendTracked(StreamingMethod.UNSUBSCRIBE, StreamingChannel.DATA, indexTopics("trade.index.", indices));
+    }
+
+    public void unsubscribeIndexSummary(String... indices) {
+        sendTracked(StreamingMethod.UNSUBSCRIBE, StreamingChannel.DATA, indexTopics("indexsummary.", indices));
+    }
     public void unsubscribeOrderStatus() { unsubscribeOrderStatus("*"); }
     public void unsubscribeOrderStatus(String accountNo) { sendTracked(StreamingMethod.UNSUBSCRIBE, StreamingChannel.TRADING, List.of(tradingTopic("order", accountNo))); }
     public void unsubscribePortfolio() { unsubscribePortfolio("*"); }
@@ -173,6 +191,8 @@ public final class StreamingService implements AutoCloseable {
     public StreamingService onPutThrough(Consumer<PutMessage> listener) { dispatcher.onPutThrough(listener); return this; }
     public StreamingService onOddLot(Consumer<OddLotMessage> listener) { dispatcher.onOddLot(listener); return this; }
     public StreamingService onHeartbeat(Consumer<HeartbeatMessage> listener) { dispatcher.onHeartbeat(listener); return this; }
+    public StreamingService onIndexTick(Consumer<IndexTickMessage> listener) { dispatcher.onIndexTick(listener); return this; }
+    public StreamingService onIndexSummary(Consumer<IndexSummaryMessage> listener) { dispatcher.onIndexSummary(listener); return this; }
     public StreamingService onOrderStatus(Consumer<OrderStatusMessage> listener) { dispatcher.onOrderStatus(listener); return this; }
     public StreamingService onPortfolio(Consumer<PortfolioMessage> listener) { dispatcher.onPortfolio(listener); return this; }
     public StreamingService onFcoOrderUpdate(Consumer<FcoOrderUpdateMessage> listener) { dispatcher.onFcoOrderUpdate(listener); return this; }
@@ -289,6 +309,19 @@ public final class StreamingService implements AutoCloseable {
     private void unsubscribe(DataTopic topic, List<String> symbols) { sendTracked(StreamingMethod.UNSUBSCRIBE, StreamingChannel.DATA, topics(topic, symbols)); }
     private List<String> topics(DataTopic topic, List<String> values) { return values.stream().filter(Objects::nonNull).map(String::trim).filter(v -> !v.isBlank()).distinct().map(v -> topic.prefix() + "." + v).toList(); }
     private List<String> normalized(String[] values) { return Arrays.stream(values).filter(Objects::nonNull).map(String::trim).filter(v -> !v.isBlank()).distinct().toList(); }
+
+    private List<String> indexTopics(String prefix, String... indices) {
+        Objects.requireNonNull(indices, "indices");
+        List<String> result = new ArrayList<>();
+        for (String index : indices) {
+            if (index == null || !index.trim().matches("[A-Za-z0-9]+")) {
+                throw new IllegalArgumentException("Index must be one alphanumeric code, for example VN30");
+            }
+            String code = index.trim().toUpperCase(Locale.ROOT);
+            if (!result.contains(prefix + code)) result.add(prefix + code);
+        }
+        return List.copyOf(result);
+    }
     private String tradingTopic(String prefix, String accountNo) {
         if (accountNo == null || accountNo.isBlank()) throw new IllegalArgumentException("accountNo is required; use * for all accounts");
         return prefix + "." + accountNo.trim();

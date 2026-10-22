@@ -2,6 +2,8 @@ package vn.ssi.openapi.marketdata;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import vn.ssi.openapi.marketdata.enums.Board;
+import vn.ssi.openapi.marketdata.model.CorporateAction;
+import vn.ssi.openapi.marketdata.model.CorporateActionsPage;
 import vn.ssi.openapi.marketdata.model.MasterData;
 import vn.ssi.openapi.marketdata.model.MarketIndex;
 import vn.ssi.openapi.marketdata.model.MarketIndexSummary;
@@ -13,6 +15,11 @@ import vn.ssi.openapi.transport.RestClient;
 import vn.ssi.openapi.transport.RestTransport;
 
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
+import java.util.Locale;
+import java.util.Set;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -24,6 +31,7 @@ import java.util.Objects;
 public final class MarketDataService {
     public static final String OHLC_PATH = "/api/v3/data/ohlc";
     public static final String MASTER_DATA_PATH = "/api/v3/data/masterdata";
+    public static final String CORPORATE_ACTIONS_PATH = "/api/v3/data/corporateActions";
     public static final String INDEX_LIST_PATH = "/api/v3/data/indexList";
     public static final String INDEX_SUMMARY_PATH = "/api/v3/data/indexSummary";
     public static final String SECURITIES_BY_BOARD_PATH = "/api/v3/data/securitiesByBoard";
@@ -34,6 +42,10 @@ public final class MarketDataService {
 
     private static final ZoneId SSI_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy/MM/dd");
+    private static final DateTimeFormatter CORPORATE_ACTION_DATE_FORMAT = DateTimeFormatter
+            .ofPattern("uuuu/MM/dd").withResolverStyle(ResolverStyle.STRICT);
+    private static final Set<Integer> CORPORATE_ACTION_PAGE_SIZES = Set.of(10, 20, 50, 100);
+    private static final int MAX_CORPORATE_ACTION_PAGES = 1000;
 
     private final RestTransport restClient;
 
@@ -190,6 +202,85 @@ public final class MarketDataService {
         requireText(fromDate, "fromDate");
         requireText(toDate, "toDate");
         return getSecuritiesSummaryInternal(fromDate, toDate, null, index, DEFAULT_PAGE, DEFAULT_SIZE);
+    }
+
+    /**
+     * Load all pages of corporate actions in the given date window (up to 5 days).
+     * An empty/null symbol queries all symbols. Defaults to Vietnamese event titles.
+     */
+    public List<CorporateAction> getCorporateActions(String symbol, String fromDate, String toDate) {
+        List<CorporateAction> results = new ArrayList<>();
+        int pageIndex = 1;
+        while (true) {
+            CorporateActionsPage page = getCorporateActionsPage(symbol, fromDate, toDate, "vn", pageIndex, 100);
+            results.addAll(page.data());
+            if (pageIndex >= Math.max(1, page.pagesCount())) return List.copyOf(results);
+            if (pageIndex >= MAX_CORPORATE_ACTION_PAGES) {
+                throw new IllegalStateException("Corporate Actions exceeds the permitted pagination safety limit");
+            }
+            pageIndex++;
+        }
+    }
+
+    public List<CorporateAction> getCorporateActions(String fromDate, String toDate) {
+        return getCorporateActions(null, fromDate, toDate);
+    }
+
+    /**
+     * Query one page. SSI permits page sizes 10/20/50/100 and language vn/en.
+     */
+    public CorporateActionsPage getCorporateActionsPage(
+            String symbol, String fromDate, String toDate, String language, int pageIndex, int pageSize) {
+        LocalDate from = corporateActionDate(fromDate, "fromDate");
+        LocalDate to = corporateActionDate(toDate, "toDate");
+        long days = ChronoUnit.DAYS.between(from, to);
+        if (days < 0 || days > 5) {
+            throw new IllegalArgumentException("Corporate Actions date range must be 0 to 5 days");
+        }
+        if (pageIndex < 1) throw new IllegalArgumentException("pageIndex must be >= 1");
+        if (!CORPORATE_ACTION_PAGE_SIZES.contains(pageSize)) {
+            throw new IllegalArgumentException("pageSize must be one of 10, 20, 50 or 100");
+        }
+        String lang = language == null || language.isBlank() ? "vn" : language.trim().toLowerCase(Locale.ROOT);
+        if (!lang.equals("vn") && !lang.equals("en")) {
+            throw new IllegalArgumentException("language must be vn or en");
+        }
+
+        Map<String, Object> params = new LinkedHashMap<>();
+        if (symbol != null && !symbol.isBlank()) {
+            String code = symbol.trim().toUpperCase(Locale.ROOT);
+            if (code.length() > 20 || !code.matches("[A-Z0-9]+")) {
+                throw new IllegalArgumentException("symbol must be alphanumeric and no longer than 20 characters");
+            }
+            params.put("symbol", code);
+        }
+        params.put("from", fromDate);
+        params.put("to", toDate);
+        params.put("language", lang);
+        params.put("pageIndex", pageIndex);
+        params.put("pageSize", pageSize);
+
+        JsonNode body = restClient.get(CORPORATE_ACTIONS_PATH, params).body();
+        List<CorporateAction> items = new ArrayList<>();
+        for (JsonNode item : arrayNode(body, true)) {
+            items.add(new CorporateAction(
+                    text(item, "symbol"), text(item, "eventTitle"),
+                    text(item, "exrightDate"), text(item, "recordDate"),
+                    text(item, "issueDate"), text(item, "exchange"),
+                    text(item, "ratio")));
+        }
+        int pagesCount = body.path("pagesCount").asInt(1);
+        int itemsCount = body.path("itemsCount").asInt(items.size());
+        return new CorporateActionsPage(pageSize, pageIndex, pagesCount, itemsCount, items);
+    }
+
+    private static LocalDate corporateActionDate(String input, String field) {
+        if (input == null) throw new IllegalArgumentException(field + " is required (yyyy/MM/dd)");
+        try {
+            return LocalDate.parse(input, CORPORATE_ACTION_DATE_FORMAT);
+        } catch (DateTimeParseException e) {
+            throw new IllegalArgumentException(field + " must use yyyy/MM/dd", e);
+        }
     }
 
     public List<MasterData> getMasterData() {

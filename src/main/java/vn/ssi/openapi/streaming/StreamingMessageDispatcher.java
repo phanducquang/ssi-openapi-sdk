@@ -26,6 +26,8 @@ public final class StreamingMessageDispatcher {
     private final ObjectReader quoteReader;
     private final List<Consumer<JsonNode>> rawListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<TradeMessage>> tradeListeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<IndexTickMessage>> indexTickListeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<IndexSummaryMessage>> indexSummaryListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<IntervalMessage>> intervalListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<QuoteMessage>> quoteListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<ForeignRoomMessage>> roomListeners = new CopyOnWriteArrayList<>();
@@ -71,6 +73,19 @@ public final class StreamingMessageDispatcher {
         }
 
         if (!"DATA".equals(channel)) return;
+        // These are index values, not regular symbol trades. Keep the existing trade path unchanged.
+        if (topic.regionMatches(true, 0, "trade.index.", 0, "trade.index.".length())) {
+            if (topic.endsWith("@1m") || topic.endsWith("@5m")) {
+                notifyListeners(intervalListeners, parseInterval(data), "index-interval");
+            } else {
+                notifyListeners(indexTickListeners, IndexTickMessage.fromJson(data), "index-tick");
+            }
+            return;
+        }
+        if (topic.regionMatches(true, 0, "indexsummary.", 0, "indexsummary.".length())) {
+            notifyListeners(indexSummaryListeners, IndexSummaryMessage.fromJson(topic, data), "index-summary");
+            return;
+        }
         if (topic.startsWith("trade.")) {
             if (topic.contains("@")) notifyListeners(intervalListeners, parseInterval(data), "interval");
             else notifyListeners(tradeListeners, parseTrade(data), "trade");
@@ -93,6 +108,8 @@ public final class StreamingMessageDispatcher {
 
     public StreamingMessageDispatcher onRaw(Consumer<JsonNode> listener) { rawListeners.add(listener); return this; }
     public StreamingMessageDispatcher onTrade(Consumer<TradeMessage> listener) { tradeListeners.add(listener); return this; }
+    public StreamingMessageDispatcher onIndexTick(Consumer<IndexTickMessage> listener) { indexTickListeners.add(listener); return this; }
+    public StreamingMessageDispatcher onIndexSummary(Consumer<IndexSummaryMessage> listener) { indexSummaryListeners.add(listener); return this; }
     public StreamingMessageDispatcher onInterval(Consumer<IntervalMessage> listener) { intervalListeners.add(listener); return this; }
     public StreamingMessageDispatcher onQuote(Consumer<QuoteMessage> listener) { quoteListeners.add(listener); return this; }
     public StreamingMessageDispatcher onForeignRoom(Consumer<ForeignRoomMessage> listener) { roomListeners.add(listener); return this; }
